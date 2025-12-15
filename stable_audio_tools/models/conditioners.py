@@ -283,6 +283,170 @@ class CLAPAudioConditioner(Conditioner):
 
         return [self.proj_out(audio_embedding), torch.ones(audio_embedding.shape[0], 1).to(device)]
 
+
+class ControlSignalConditioner(Conditioner):
+    import torchcrepe
+    import torchaudio
+    import torch.nn.functional as F
+    def __init__(self, 
+                output_dim: int, # N
+                emb_dim: int, # D
+                sample_rate: int, 
+                hop_length: int,
+                n_fft : int,
+                ):
+        super().__init__(dim=1, output_dim=output_dim, project_out=False)
+
+        CREPE_DIM = 360
+        self.sample_rate = sample_rate
+        self.hop_length = hop_length
+        self.target_frames = output_dim      
+
+        self.loudness_proj = nn.Conv1d(1, emb_dim, kernel_size=1)
+        self.centroid_proj = nn.Conv1d(1, emb_dim, kernel_size=1) 
+        self.pitch_proj = nn.Conv1d(CREPE_DIM, emb_dim, kernel_size=1) 
+
+
+        self.n_fft = n_fft
+        self.win_length = n_fft
+
+        self.spectrogram = torchaudio.transforms.Spectrogram(
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            power=1.0,
+            center=True,
+            pad_mode="reflect"
+        )
+
+        n_freq = self.n_fft // 2 + 1
+        freqs = torch.linspace(0, self.sample_rate / 2, n_freq)
+        
+        # loudness
+        #https://en.wikipedia.org/wiki/A-weighting
+        f_sq = freqs**2
+        c1 = 12194**2
+        c2 = 20.6**2
+        c3 = 107.7**2
+        c4 = 737.9**2
+        
+        num = c1 * (f_sq**2)
+        den = (f_sq + c2) * (f_sq + c1) * torch.sqrt(f_sq + c3) * torch.sqrt(f_sq + c4)
+        
+        weights_a = num / (den + 1e-12)
+        
+        f_1k_idx = (freqs - 1000.0).abs().argmin()
+        norm_factor = weights_a[f_1k_idx]
+        weights_a = weights_a / norm_factor
+        self.register_buffer("a_weights", weights_a.view(1, 1, -1, 1))
+
+
+        # spectral centroid
+        freqs_clamped = torch.clamp(freqs, min=1e-6)
+        midi_like_freqs = 69.0 + 12.0 * torch.log2(freqs_clamped / 440.0)
+        self.register_buffer('midi_like_freqs', midi_like_freqs.view(1, -1, 1))
+
+
+        self.p_drop_control = 0.2
+        self.p_drop_all = 0.2
+
+
+    def _loudness(self, mag_spec):
+        # X: (B, 1, N)
+        # output: (B, 1, N)
+        mag_spec_weighted = mag_spec * self.a_weights
+        rms_per_frame = torch.sqrt(torch.mean(mag_spec_weighted**2, dim=2))
+        return rms_per_frame
+
+
+    def _pitch(self, X):      
+        # X: (B, 1, N)
+        # output: (B, 360, N)
+        all_probs = [] 
+        for x in X:
+            batch = next(torchcrepe.preprocess(x, self.sample_rate, self.hop_length, device=x.device))
+            probs = torchcrepe.infer(batch, model='tiny',  device=x.device, embed=False) 
+            all_probs.append(probs)
+        audio_probs = torch.stack(all_probs, dim=0)
+        audio_probs[audio_probs < 0.1] = 0.0
+        return audio_probs.permute(0, 2, 1)
+
+
+    def _centroid(self, mag_spec): 
+        # X: (B, 1, N)
+        # output: (B, 1, N)
+        numerator = torch.sum(self.midi_like_freqs * mag_spec, dim=2)
+        denominator = torch.sum(mag_spec, dim=2).clamp(min=1e-9)
+        centroid_midi = numerator / denominator
+        preprocessed_centroid = centroid_midi / 127.0
+        return preprocessed_centroid
+
+    def _align_frames(self, audio):
+        # X: (B, C, N_frames)
+        # output: (B, C, self.target_frames)
+        N_frames = audio.shape[-1]
+        if N_frames == self.target_frames:
+            return audio
+        # Use linear interpolation
+        return torch.nn.functional.interpolate(
+            audio,
+            size=self.target_frames, 
+            mode='linear', 
+            align_corners=False
+        )
+
+    def _filter(self, X: torch.Tensor, inference_k: int = 10) -> torch.Tensor:
+        # X: (B, C, N_frames)
+        # output: (B, C, N_frames)
+        B, C, T = X.shape
+
+        if self.training:
+            k = torch.randint(low=0, high=13, size=(1,)).item() * 2 + 1
+        else:
+            k = inference_k
+
+        pad_size = (k - 1) // 2
+        x_padded = F.pad(X, (pad_size, pad_size), mode='reflect')
+        x_unfold = x_padded.unfold(dimension=-1, size=k, step=1)
+        return x_unfold.median(dim=-1).values
+
+    def forward(self, X: tp.Union[torch.Tensor, tp.List[torch.Tensor], tp.Tuple[torch.Tensor]], device: tp.Union[torch.device, str]) -> tp.Tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(X, list) or isinstance(X, tuple):
+            X = torch.cat(X, dim=0)
+        X = X.mean(dim=1, keepdim = True)
+        X = X.to(device)
+        # X: (B, 1, N)
+        # output: (B, C, self.target_frames)
+        mag_spec = self.spectrogram(X)
+        l = self.loudness_proj(self._align_frames(self._filter(self._loudness(mag_spec))))
+        c = self.centroid_proj(self._align_frames(self._filter(self._centroid(mag_spec))))
+        p = self.pitch_proj(self._align_frames(self._filter(self._pitch(X))))
+
+        if self.training:
+            B = l.shape[0]
+            drop_all_mask = torch.rand(B, 1, 1, device=device) < self.p_drop_all
+            
+            # Create individual drop masks, also per item
+            drop_l_mask = torch.rand(B, 1, 1, device=device) < self.p_drop_control
+            drop_c_mask = torch.rand(B, 1, 1, device=device) < self.p_drop_control
+            drop_p_mask = torch.rand(B, 1, 1, device=device) < self.p_drop_control
+
+            # Apply the "drop all" mask first
+            l = torch.where(drop_all_mask, torch.zeros_like(l), l)
+            c = torch.where(drop_all_mask, torch.zeros_like(c), c)
+            p = torch.where(drop_all_mask, torch.zeros_like(p), p)
+
+            # Apply the individual masks, ONLY where "drop all" was False
+            l = torch.where(~drop_all_mask & drop_l_mask, torch.zeros_like(l), l)
+            c = torch.where(~drop_all_mask & drop_c_mask, torch.zeros_like(c), c)
+            p = torch.where(~drop_all_mask & drop_p_mask, torch.zeros_like(p), p)
+
+        batch_embeds = l + c + p
+        mask = torch.ones(batch_embeds.shape[0], batch_embeds.shape[2]).to(device)
+        # output shape (B, D, N)
+        return batch_embeds, mask
+    
+
 class T5Conditioner(Conditioner):
 
     T5_MODELS = ["t5-small", "t5-base", "t5-large", "t5-3b", "t5-11b",
@@ -713,6 +877,8 @@ def create_multi_conditioner_from_conditioning_config(config: tp.Dict[str, tp.An
             conditioners[id] = CLAPTextConditioner(**conditioner_config)
         elif conditioner_type == "clap_audio":
             conditioners[id] = CLAPAudioConditioner(**conditioner_config)
+        elif conditioner_type == "s2s_audio":
+            conditioners[id] = ControlSignalConditioner(**conditioner_config)
         elif conditioner_type == "int":
             conditioners[id] = IntConditioner(**conditioner_config)
         elif conditioner_type == "number":
