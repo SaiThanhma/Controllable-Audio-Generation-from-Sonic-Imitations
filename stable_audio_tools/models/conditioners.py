@@ -284,10 +284,10 @@ class CLAPAudioConditioner(Conditioner):
         return [self.proj_out(audio_embedding), torch.ones(audio_embedding.shape[0], 1).to(device)]
 
 
+import torchcrepe
+import torchaudio
+import torch.nn.functional as F
 class ControlSignalConditioner(Conditioner):
-    import torchcrepe
-    import torchaudio
-    import torch.nn.functional as F
     def __init__(self, 
                 output_dim: int, # N
                 emb_dim: int, # D
