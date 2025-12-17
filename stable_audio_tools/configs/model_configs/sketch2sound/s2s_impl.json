@@ -1,6 +1,6 @@
 {
     "model_type": "diffusion_cond",
-    "sample_size": 2097152,
+    "sample_size": 524288,
     "sample_rate": 44100,
     "audio_channels": 2,
     "model": {
@@ -22,6 +22,7 @@
                 },
                 "decoder": {
                     "type": "oobleck",
+                    "requires_grad": false,
                     "config": {
                         "out_channels": 2,
                         "channels": 128,
@@ -70,7 +71,7 @@
                     "id": "control_signal",
                     "type": "s2s_audio",
                     "config": {
-                        "output_dim": 1024,
+                        "output_dim": 256,
                         "emb_dim": 64,
                         "sample_rate": 44100,
                         "n_fft": 2048,
@@ -105,17 +106,16 @@
                 "optimizer": {
                     "type": "AdamW",
                     "config": {
-                        "lr": 5e-5,
+                        "lr": 5e-6,
                         "betas": [0.9, 0.999],
                         "weight_decay": 1e-3
                     }
                 },
                 "scheduler": {
-                    "type": "InverseLR",
+                    "type": "CosineAnnealingLR",
                     "config": {
-                        "inv_gamma": 1000000,
-                        "power": 0.5,
-                        "warmup": 0.99
+                        "T_max": 40000,
+                        "eta_min": 1e-7
                     }
                 }
             }

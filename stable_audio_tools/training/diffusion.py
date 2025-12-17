@@ -444,21 +444,18 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             drop_text_mask = (states == 1) | (states == 3)
             drop_control_mask = (states == 2) | (states == 3)
 
+            cond = self.diffusion.get_conditioning_inputs(conditioning)
+            null_text = torch.zeros_like(cond['cross_attn_cond'])
+            text_mask_expanded = drop_text_mask.view(-1, 1, 1).float()
+            cond['cross_attn_cond'] = (1 - text_mask_expanded) * cond['cross_attn_cond'] + text_mask_expanded * null_text
+
             ctrl_emb, _ = conditioning['control_signal']
             null_ctrl = torch.zeros_like(ctrl_emb, device=ctrl_emb.device)
             ctrl_mask_expanded = drop_control_mask.view(-1, 1, 1).float()
             ctrl_emb = (1 - ctrl_mask_expanded) * ctrl_emb + ctrl_mask_expanded * null_ctrl
             noised_inputs = noised_inputs + ctrl_emb
 
-            cond = self.diffusion.get_conditioning_inputs(conditioning)
-            null_text = torch.zeros_like(cond['cross_attn_cond'])
-            text_mask_expanded = drop_text_mask.view(-1, 1, 1).float()
-            cond['cross_attn_cond'] = (1 - text_mask_expanded) * cond['cross_attn_cond'] + text_mask_expanded * null_text
-
-            extra_args["cfg_dropout_prob"] = 0.0
-            extra_args["cfg_scale"] = 1.0
-
-            output = self.diffusion.model(noised_inputs, t, **cond, **extra_args) #Check if no cfg path is used in model
+            output = self.diffusion.model(noised_inputs, t, cfg_dropout_prob = 0.0, cfg_scale = 1.0, **extra_args) #Check if no cfg path is used in model
             
         else:
             output = self.diffusion(noised_inputs, t, cond=conditioning, cfg_dropout_prob = self.cfg_dropout_prob, **extra_args)
