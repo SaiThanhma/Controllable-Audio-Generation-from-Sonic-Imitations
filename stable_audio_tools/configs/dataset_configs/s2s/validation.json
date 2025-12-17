@@ -1,0 +1,13 @@
+{
+    "dataset_type": "wds",
+    "random_crop": false,
+    "datasets": [
+        {
+            "id": "freesound",
+            "path": "/home/stud/dco/storage/user/dco/freesound/validation",
+            "custom_metadata_module": "/home/stud/dco/Desktop/s2s-2/Controllable-Audio-Generation-from-Sonic-Imitations/stable_audio_tools/configs/dataset_configs/s2s/validation_md.py"
+
+        }
+    ]
+}
+
