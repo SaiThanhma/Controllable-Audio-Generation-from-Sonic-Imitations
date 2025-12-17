@@ -455,7 +455,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             ctrl_emb = (1 - ctrl_mask_expanded) * ctrl_emb + ctrl_mask_expanded * null_ctrl
             noised_inputs = noised_inputs + ctrl_emb
 
-            output = self.diffusion.model(noised_inputs, t, cfg_dropout_prob = 0.0, cfg_scale = 1.0, **extra_args) #Check if no cfg path is used in model
+            output = self.diffusion.model(noised_inputs, t, cfg_dropout_prob = 0.0, cfg_scale = 1.0, **extra_args)
             
         else:
             output = self.diffusion(noised_inputs, t, cond=conditioning, cfg_dropout_prob = self.cfg_dropout_prob, **extra_args)

@@ -61,6 +61,6 @@ def get_custom_metadata(info, audio):
     return {
         "prompt": prompt,
         "seconds_start" : seconds_start,
-        "seconds_total" : seconds_total
-        #"control_signal": audio
+        "seconds_total" : seconds_total,
+        "control_signal": audio
     }

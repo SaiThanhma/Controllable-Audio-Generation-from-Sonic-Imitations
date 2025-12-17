@@ -28,10 +28,7 @@ def get_custom_metadata(info, audio):
 
     # ---- Random subset of metadata ---- #
 
-    k = random.randint(1, len(parts))    # select 1..N pieces
-    selected = random.sample(parts, k)
-
-    prompt = ", ".join(selected)
+    prompt = ", ".join(parts)
 
     # ---- Return final metadata ---- #
     return {

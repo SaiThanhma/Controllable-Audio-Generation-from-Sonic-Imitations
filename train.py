@@ -105,11 +105,6 @@ def main():
     ckpt_callback = pl.callbacks.ModelCheckpoint(every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=-1)
     save_model_config_callback = ModelConfigEmbedderCallback(model_config)
 
-    if args.val_dataset_config:
-        demo_callback = create_demo_callback_from_config(model_config, demo_dl=val_dl)
-    else:
-        demo_callback = create_demo_callback_from_config(model_config, demo_dl=train_dl)
-
     #Combine args and config dicts
     args_dict = vars(args)
     args_dict.update({"model_config": model_config})
@@ -152,7 +147,8 @@ def main():
         strategy=strategy,
         precision=args.precision,
         accumulate_grad_batches=args.accum_batches, 
-        callbacks=[ckpt_callback, demo_callback, exc_callback, save_model_config_callback],
+        max_steps=args.max_steps,
+        callbacks=[ckpt_callback, exc_callback, save_model_config_callback],
         logger=logger,
         log_every_n_steps=1,
         max_epochs=10000000,
