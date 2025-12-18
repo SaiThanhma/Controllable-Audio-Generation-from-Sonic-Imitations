@@ -102,7 +102,7 @@ def main():
         logger = None
         checkpoint_dir = args.save_dir if args.save_dir else None
         
-    ckpt_callback = pl.callbacks.ModelCheckpoint(every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=-1)
+    ckpt_callback = pl.callbacks.ModelCheckpoint(every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=args.save_top_k)
     save_model_config_callback = ModelConfigEmbedderCallback(model_config)
 
     #Combine args and config dicts
