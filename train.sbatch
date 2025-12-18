@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name="train 1 s2s"
+#SBATCH --job-name="train 2 cfg 0.05 s2s"
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=10
 #SBATCH --nodelist=node[4-5,14-21]
