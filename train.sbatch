@@ -1,10 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name="train 2 cfg 0.05 s2s"
+#SBATCH --job-name="train 1 s2s"
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=10
+
 #SBATCH --nodelist=node[4-5,14-21]
+#SBATCH --ntasks-per-node=2
+#SBATCH --gpus-per-node=2
 #SBATCH --gres=gpu:2
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=5-00:00:00
 #SBATCH --mail-type=ALL
 #SBATCH --output=/storage/slurm/logs/slurm-%j.out

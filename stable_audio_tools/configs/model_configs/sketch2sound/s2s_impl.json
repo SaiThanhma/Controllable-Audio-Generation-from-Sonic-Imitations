@@ -101,7 +101,7 @@
     "training": {
         "use_ema": true,
         "log_loss_info": false,
-        "cfg_dropout_prob" : 0.05,
+        "cfg_dropout_prob" : 0.1,
         "optimizer_configs": {
             "diffusion": {
                 "optimizer": {
