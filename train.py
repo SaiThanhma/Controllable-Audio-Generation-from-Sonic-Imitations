@@ -143,23 +143,28 @@ def main():
     trainer = pl.Trainer(
         devices="auto",
         accelerator="gpu",
-        num_nodes = args.num_nodes,
+        num_nodes=args.num_nodes,
         strategy=strategy,
         precision=args.precision,
         accumulate_grad_batches=args.accum_batches, 
-        max_steps=args.max_steps,
         callbacks=[ckpt_callback, exc_callback, save_model_config_callback],
         logger=logger,
         log_every_n_steps=1,
-        max_epochs=10000000,
+        max_steps=args.max_steps,
         default_root_dir=args.save_dir,
         gradient_clip_val=args.gradient_clip_val,
         reload_dataloaders_every_n_epochs = 0,
+        limit_val_batches=args.limit_val_batches,
         num_sanity_val_steps=0, # If you need to debug validation, change this line
         **val_args      
     )
+
+    if val_dl is not None:
+        print("Running pre-training validation...")
+        trainer.validate(training_wrapper, dataloaders=val_dl)
 
     trainer.fit(training_wrapper, train_dl, val_dl, ckpt_path=args.ckpt_path if args.ckpt_path else None)
 
 if __name__ == '__main__':
     main()
+    

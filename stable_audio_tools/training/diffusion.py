@@ -436,6 +436,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
             conditioning['inpaint_mask'] = [inpaint_mask]
             conditioning['inpaint_masked_input'] = [inpaint_masked_input]
+
         if 'control_signal' in conditioning:
             # [Keep All, Drop Text, Drop Control, Drop Both]
             probs = torch.tensor([1.0 - (self.cfg_dropout_prob * 3), self.cfg_dropout_prob, self.cfg_dropout_prob, self.cfg_dropout_prob], device=self.device)
@@ -445,17 +446,17 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             drop_control_mask = (states == 2) | (states == 3)
 
             cond = self.diffusion.get_conditioning_inputs(conditioning)
-            null_text = torch.zeros_like(cond['cross_attn_cond'])
-            text_mask_expanded = drop_text_mask.view(-1, 1, 1).float()
-            cond['cross_attn_cond'] = (1 - text_mask_expanded) * cond['cross_attn_cond'] + text_mask_expanded * null_text
+            null_text = torch.zeros_like(cond['cross_attn_cond'], device=cond['cross_attn_cond'].device)
+            text_mask_expanded = drop_text_mask.view(-1, 1, 1)
+            cond['cross_attn_cond'] = torch.where(text_mask_expanded, null_text, cond['cross_attn_cond'])
 
             ctrl_emb, _ = conditioning['control_signal']
             null_ctrl = torch.zeros_like(ctrl_emb, device=ctrl_emb.device)
-            ctrl_mask_expanded = drop_control_mask.view(-1, 1, 1).float()
-            ctrl_emb = (1 - ctrl_mask_expanded) * ctrl_emb + ctrl_mask_expanded * null_ctrl
+            ctrl_mask_expanded = drop_control_mask.view(-1, 1, 1)
+            ctrl_emb = torch.where(ctrl_mask_expanded, null_ctrl, ctrl_emb)
             noised_inputs = noised_inputs + ctrl_emb
 
-            output = self.diffusion.model(noised_inputs, t, cfg_dropout_prob = 0.0, cfg_scale = 1.0, **extra_args)
+            output = self.diffusion.model(noised_inputs, t, **cond, cfg_dropout_prob = 0.0, cfg_scale = 1.0, **extra_args)
             
         else:
             output = self.diffusion(noised_inputs, t, cond=conditioning, cfg_dropout_prob = self.cfg_dropout_prob, **extra_args)
@@ -519,7 +520,6 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             reals = reals[0]
 
         loss_info = {}
-
         diffusion_input = reals
 
         with torch.cuda.amp.autocast() and torch.no_grad():
@@ -577,12 +577,15 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             # if use_padding_mask:
             #     extra_args["mask"] = padding_masks
 
+            if 'control_signal' in conditioning:
+                ctrl_emb, _ = conditioning['control_signal']
+                noised_inputs = noised_inputs + ctrl_emb
             with torch.cuda.amp.autocast() and torch.no_grad():
-                output = self.diffusion(noised_inputs, t, cond=conditioning, cfg_dropout_prob = 0, **extra_args)
+                output = self.diffusion(noised_inputs, t, cond=conditioning, cfg_dropout_prob = 0.0,  cfg_scale = 1.0, **extra_args)
 
                 val_loss = F.mse_loss(output, targets)
 
-                self.validation_step_outputs[f'val/loss_{validation_timestep:.1f}'].append(val_loss.item())
+            self.validation_step_outputs[f'val/loss_{validation_timestep:.1f}'].append(val_loss.item())
 
     def on_validation_epoch_end(self):
         log_dict = {}

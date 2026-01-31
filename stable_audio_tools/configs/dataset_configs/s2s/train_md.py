@@ -12,15 +12,12 @@ def get_custom_metadata(info, audio):
     - join into a single prompt string
     """
     meta = info["original_data"]
-    seconds_start = info["seconds_start"]
-    seconds_total = info["seconds_total"]
     parts = []
 
     # ---- Extract possible metadata text ---- #
 
     # 1. title
     if "title" in meta:
-
         title = os.path.splitext(meta["title"])[0]
         parts.append(title)
 
@@ -54,13 +51,12 @@ def get_custom_metadata(info, audio):
 
     # ---- Join into final prompt ---- #
     selected = [random_case(s) for s in selected]
-
     prompt = ", ".join(selected)
 
     # ---- Return final metadata ---- #
     return {
         "prompt": prompt,
-        "seconds_start" : seconds_start,
-        "seconds_total" : seconds_total,
+        "seconds_start" : info["seconds_start"],
+        "seconds_total" : info["seconds_total"],
         "control_signal": audio
     }

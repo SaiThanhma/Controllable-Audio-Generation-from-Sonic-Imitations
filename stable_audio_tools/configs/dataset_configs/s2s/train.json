@@ -1,6 +1,8 @@
 {
     "dataset_type": "wds",
     "random_crop": false,
+    "volume_norm": false,
+    "augment_phase": false,
     "datasets": [
         {
             "id": "freesound",

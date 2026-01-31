@@ -285,6 +285,7 @@ class CLAPAudioConditioner(Conditioner):
 
 
 import torchcrepe
+from torchcrepe.core import PITCH_BINS
 import torchaudio
 import torch.nn.functional as F
 class ControlSignalConditioner(Conditioner):
@@ -297,14 +298,13 @@ class ControlSignalConditioner(Conditioner):
                 ):
         super().__init__(dim=1, output_dim=output_dim, project_out=False)
 
-        CREPE_DIM = 360
         self.sample_rate = sample_rate
         self.hop_length = hop_length
         self.target_frames = output_dim      
 
         self.loudness_proj = nn.Conv1d(1, emb_dim, kernel_size=1)
         self.centroid_proj = nn.Conv1d(1, emb_dim, kernel_size=1) 
-        self.pitch_proj = nn.Conv1d(CREPE_DIM, emb_dim, kernel_size=1) 
+        self.pitch_proj = nn.Conv1d(PITCH_BINS, emb_dim, kernel_size=1) 
 
 
         self.n_fft = n_fft
@@ -340,44 +340,41 @@ class ControlSignalConditioner(Conditioner):
         weights_a = weights_a / norm_factor
         self.register_buffer("a_weights", weights_a.view(1, 1, -1, 1))
 
-
         # spectral centroid
-        freqs_clamped = torch.clamp(freqs, min=1e-6)
-        midi_like_freqs = 69.0 + 12.0 * torch.log2(freqs_clamped / 440.0)
-        self.register_buffer('midi_like_freqs', midi_like_freqs.view(1, -1, 1))
-
+        self.register_buffer('freqs_linear', freqs.view(1, 1, -1, 1))
 
         self.p_drop_control = 0.2
         self.p_drop_all = 0.2
 
-
     def _loudness(self, mag_spec):
-        # X: (B, 1, N)
+        # mag_spec: (B, 1, F, frames)
         # output: (B, 1, N)
         mag_spec_weighted = mag_spec * self.a_weights
-        rms_per_frame = torch.sqrt(torch.mean(mag_spec_weighted**2, dim=2))
+        rms_per_frame = torch.sqrt(torch.mean(mag_spec_weighted**2, dim=-2))
         return rms_per_frame
-
 
     def _pitch(self, X):      
         # X: (B, 1, N)
-        # output: (B, 360, N)
+        # output: (B, 360, frames)
         all_probs = [] 
         for x in X:
             batch = next(torchcrepe.preprocess(x, self.sample_rate, self.hop_length, device=x.device))
-            probs = torchcrepe.infer(batch, model='tiny',  device=x.device, embed=False) 
+            with torch.no_grad():
+                probs = torchcrepe.infer(batch, model='tiny',  device=x.device, embed=False) 
             all_probs.append(probs)
         audio_probs = torch.stack(all_probs, dim=0)
-        audio_probs[audio_probs < 0.1] = 0.0
-        return audio_probs.permute(0, 2, 1)
-
+        probs = torch.where(audio_probs < 0.1, 0.0, audio_probs)
+        return probs.permute(0, 2, 1)
 
     def _centroid(self, mag_spec): 
-        # X: (B, 1, N)
+        # mag_spec: (B, 1, F, frames)
         # output: (B, 1, N)
-        numerator = torch.sum(self.midi_like_freqs * mag_spec, dim=2)
+
+        numerator = torch.sum(self.freqs_linear * mag_spec, dim=2)
         denominator = torch.sum(mag_spec, dim=2).clamp(min=1e-9)
-        centroid_midi = numerator / denominator
+        centroid_hz = numerator / denominator
+        centroid_hz = torch.clamp(centroid_hz, min=1e-6) 
+        centroid_midi = 69.0 + 12.0 * torch.log2(centroid_hz / 440.0)
         preprocessed_centroid = centroid_midi / 127.0
         return preprocessed_centroid
 
@@ -395,7 +392,7 @@ class ControlSignalConditioner(Conditioner):
             align_corners=False
         )
 
-    def _filter(self, X: torch.Tensor, inference_k: int = 10) -> torch.Tensor:
+    def _filter(self, X: torch.Tensor, inference_k: int = 9) -> torch.Tensor:
         # X: (B, C, N_frames)
         # output: (B, C, N_frames)
         B, C, T = X.shape
@@ -418,9 +415,9 @@ class ControlSignalConditioner(Conditioner):
         # X: (B, 1, N)
         # output: (B, C, self.target_frames)
         mag_spec = self.spectrogram(X)
-        l = self.loudness_proj(self._align_frames(self._filter(self._loudness(mag_spec))))
-        c = self.centroid_proj(self._align_frames(self._filter(self._centroid(mag_spec))))
-        p = self.pitch_proj(self._align_frames(self._filter(self._pitch(X))))
+        l = self.loudness_proj(self._filter(self._align_frames(self._loudness(mag_spec))))
+        c = self.centroid_proj(self._filter(self._align_frames(self._centroid(mag_spec))))
+        p = self.pitch_proj(self._filter(self._align_frames(self._pitch(X))))
 
         if self.training:
             B = l.shape[0]

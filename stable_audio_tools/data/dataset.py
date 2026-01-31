@@ -948,6 +948,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
             max_silence_duration=dataset_config.get("max_silence_duration", 0.25),
             random_crop=dataset_config.get("random_crop", True),
             volume_norm=dataset_config.get("volume_norm", False),
+            augment_phase=dataset_config.get("augment_phase", False),
             volume_norm_param=dataset_config.get("volume_norm_param", [-16, 2]),
             num_workers=num_workers,
             persistent_workers=True,
