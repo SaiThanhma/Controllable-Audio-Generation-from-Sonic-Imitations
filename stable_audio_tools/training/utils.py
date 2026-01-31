@@ -1,5 +1,4 @@
 from pytorch_lightning.loggers import WandbLogger, CometLogger
-from ..interface.aeiou import pca_point_cloud
 
 import wandb
 import torch
@@ -119,11 +118,3 @@ def log_image(logger, key, img_data):
         logger.experiment.log({key: wandb.Image(img_data)})
     elif isinstance(logger, CometLogger):
         logger.experiment.log_image(img_data, name=key)
-
-def log_point_cloud(logger, key, tokens, caption=None):
-    if isinstance(logger, WandbLogger):
-        point_cloud = pca_point_cloud(tokens)
-        logger.experiment.log({key: point_cloud})
-    elif isinstance(logger, CometLogger):
-        point_cloud = pca_point_cloud(tokens, rgb_float=True, output_type="points")
-        #logger.experiment.log_points_3d(scene_name=key, points=point_cloud)

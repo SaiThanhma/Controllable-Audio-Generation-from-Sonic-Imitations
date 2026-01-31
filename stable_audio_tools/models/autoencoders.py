@@ -15,7 +15,7 @@ from ..inference.sampling import sample
 from ..inference.utils import prepare_audio
 from .blocks import SnakeBeta
 from .bottleneck import Bottleneck, DiscreteBottleneck
-from .diffusion import ConditionedDiffusionModel, DAU1DCondWrapper, UNet1DCondWrapper, DiTWrapper
+from .diffusion import ConditionedDiffusionModel, DiTWrapper
 from .factory import create_pretransform_from_config, create_bottleneck_from_config
 from .pretransforms import Pretransform, AutoencoderPretransform
 from .transformer import ContinuousTransformer, TransformerBlock, RotaryEmbedding
@@ -925,11 +925,7 @@ def create_diffAE_from_config(config: Dict[str, Any]):
 
     diffusion_model_type = diffae_config["diffusion"]["type"]
 
-    if diffusion_model_type == "DAU1d":
-        diffusion = DAU1DCondWrapper(**diffae_config["diffusion"]["config"])
-    elif diffusion_model_type == "adp_1d":
-        diffusion = UNet1DCondWrapper(**diffae_config["diffusion"]["config"])
-    elif diffusion_model_type == "dit":
+    if diffusion_model_type == "dit":
         diffusion = DiTWrapper(**diffae_config["diffusion"]["config"])
 
     latent_dim = diffae_config.get("latent_dim", None)
