@@ -5,10 +5,7 @@ def create_model_from_config(model_config):
 
     assert model_type is not None, 'model_type must be specified in model config'
 
-    if model_type == 'autoencoder':
-        from .autoencoders import create_autoencoder_from_config
-        return create_autoencoder_from_config(model_config)
-    elif model_type == 'diffusion_cond':
+    if model_type == 'diffusion_cond':
         from .diffusion import create_diffusion_cond_from_config
         return create_diffusion_cond_from_config(model_config)
     else:
