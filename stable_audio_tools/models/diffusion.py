@@ -1,12 +1,12 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from functools import partial
+#from functools import partial
 import numpy as np
 import typing as tp
 import random
 
-from .blocks import ResConvBlock, FourierFeatures, Upsample1d, Upsample1d_2, Downsample1d, Downsample1d_2, SelfAttention1d, SkipBlock, expand_to_planes
+from .blocks import FourierFeatures
 from .conditioners import MultiConditioner, create_multi_conditioner_from_conditioning_config
 from .dit import DiffusionTransformer
 from .factory import create_pretransform_from_config
@@ -34,39 +34,6 @@ class Profiler:
         rep += 80 * "=" + "\n\n\n"
         return rep
 
-class DiffusionModel(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def forward(self, x, t, **kwargs):
-        raise NotImplementedError()
-
-class DiffusionModelWrapper(nn.Module):
-    def __init__(
-                self,
-                model: DiffusionModel,
-                io_channels,
-                sample_size,
-                sample_rate,
-                min_input_length,
-                pretransform: tp.Optional[Pretransform] = None,
-    ):
-        super().__init__()
-        self.io_channels = io_channels
-        self.sample_size = sample_size
-        self.sample_rate = sample_rate
-        self.min_input_length = min_input_length
-
-        self.model = model
-
-        if pretransform is not None:
-            self.pretransform = pretransform
-        else:
-            self.pretransform = None
-
-    def forward(self, x, t, **kwargs):
-        return self.model(x, t, **kwargs)
-
 class ConditionedDiffusionModel(nn.Module):
     def __init__(self,
                 *args,
@@ -93,7 +60,6 @@ class ConditionedDiffusionModel(nn.Module):
                 cfg_scale: float = 1.0,
                 cfg_dropout_prob: float = 0.0,
                 batch_cfg: bool = False,
-                rescale_cfg: bool = False,
                 **kwargs):
         raise NotImplementedError()
 
@@ -134,7 +100,7 @@ class ConditionedDiffusionModelWrapper(nn.Module):
         if distribution_shift_options is not None:
             self.dist_shift = DistributionShift(**distribution_shift_options)     
 
-    def get_conditioning_inputs(self, conditioning_tensors: tp.Dict[str, tp.Any], negative=False):
+    def get_conditioning_inputs(self, conditioning_tensors: tp.Dict[str, tp.Any]):
         cross_attention_input = None
         cross_attention_masks = None
         global_cond = None
@@ -196,22 +162,15 @@ class ConditionedDiffusionModelWrapper(nn.Module):
             prepend_cond = torch.cat(prepend_conds, dim=1)
             prepend_cond_mask = torch.cat(prepend_cond_masks, dim=1)
 
-        if negative:
-            return {
-                "negative_cross_attn_cond": cross_attention_input,
-                "negative_cross_attn_mask": cross_attention_masks,
-                "negative_global_cond": global_cond,
-                "negative_input_concat_cond": input_concat_cond
-            }
-        else:
-            return {
-                "cross_attn_cond": cross_attention_input,
-                "cross_attn_mask": cross_attention_masks,
-                "global_cond": global_cond,
-                "input_concat_cond": input_concat_cond,
-                "prepend_cond": prepend_cond,
-                "prepend_cond_mask": prepend_cond_mask
-            }
+
+        return {
+            "cross_attn_cond": cross_attention_input,
+            "cross_attn_mask": cross_attention_masks,
+            "global_cond": global_cond,
+            "input_concat_cond": input_concat_cond,
+            "prepend_cond": prepend_cond,
+            "prepend_cond_mask": prepend_cond_mask
+        }
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, cond: tp.Dict[str, tp.Any], **kwargs):
         return self.model(x, t, **self.get_conditioning_inputs(cond), **kwargs)
@@ -237,31 +196,23 @@ class DiTWrapper(ConditionedDiffusionModel):
                 t,
                 cross_attn_cond=None,
                 cross_attn_mask=None,
-                negative_cross_attn_cond=None,
-                negative_cross_attn_mask=None,
                 input_concat_cond=None,
-                negative_input_concat_cond=None,
                 global_cond=None,
-                negative_global_cond=None,
                 prepend_cond=None,
                 prepend_cond_mask=None,
                 cfg_scale=1.0,
                 cfg_dropout_prob: float = 0.0,
                 batch_cfg: bool = True,
-                rescale_cfg: bool = False,
                 scale_phi: float = 0.0,
                 **kwargs):
 
         assert batch_cfg, "batch_cfg must be True for DiTWrapper"
-        # assert negative_input_concat_cond is None, "negative_input_concat_cond is not supported for DiTWrapper"
 
         return self.model(
             x,
             t,
             cross_attn_cond=cross_attn_cond,
             cross_attn_cond_mask=cross_attn_mask,
-            negative_cross_attn_cond=negative_cross_attn_cond,
-            negative_cross_attn_mask=negative_cross_attn_mask,
             input_concat_cond=input_concat_cond,
             prepend_cond=prepend_cond,
             prepend_cond_mask=prepend_cond_mask,
@@ -288,11 +239,7 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
     diffusion_model_config = diffusion_config.get('config', None)
     assert diffusion_model_config is not None, "Must specify diffusion model config"
 
-    if diffusion_model_type == 'adp_cfg_1d':
-        diffusion_model = UNetCFG1DWrapper(**diffusion_model_config)
-    elif diffusion_model_type == 'adp_1d':
-        diffusion_model = UNet1DCondWrapper(**diffusion_model_config)
-    elif diffusion_model_type == 'dit':
+    if diffusion_model_type == 'dit':
         diffusion_model = DiTWrapper(diffusion_objective=diffusion_objective, **diffusion_model_config)
 
     io_channels = model_config.get('io_channels', None)
@@ -323,16 +270,14 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
     if conditioning_config is not None:
         conditioner = create_multi_conditioner_from_conditioning_config(conditioning_config, pretransform=pretransform)
 
-    if diffusion_model_type == "adp_cfg_1d" or diffusion_model_type == "adp_1d":
-        min_input_length *= np.prod(diffusion_model_config["factors"])
-    elif diffusion_model_type == "dit":
+    if diffusion_model_type == "dit":
         min_input_length *= diffusion_model.model.patch_size
 
     # Get the proper wrapper class
 
     extra_kwargs = {}
 
-    if model_type == "diffusion_cond" or model_type == "diffusion_cond_inpaint":
+    if model_type == "diffusion_cond":
         wrapper_fn = ConditionedDiffusionModelWrapper
 
         extra_kwargs["diffusion_objective"] = diffusion_objective

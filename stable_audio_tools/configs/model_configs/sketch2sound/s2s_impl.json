@@ -47,14 +47,18 @@
                     "id": "prompt",
                     "type": "t5",
                     "config": {
+                        "output_dim": 768,
                         "t5_model_name": "t5-base",
-                        "max_length": 128
+                        "max_length": 128,
+                        "enable_grad": false,
+                        "project_out": false
                     }
                 },
                 {
                     "id": "seconds_start",
                     "type": "number",
                     "config": {
+                        "output_dim": 768,
                         "min_val": 0,
                         "max_val": 512
                     }
@@ -63,6 +67,7 @@
                     "id": "seconds_total",
                     "type": "number",
                     "config": {
+                        "output_dim": 768,
                         "min_val": 0,
                         "max_val": 512
                     }
@@ -78,8 +83,7 @@
                         "hop_length": 1024
                     }
                 }
-            ],
-            "cond_dim": 768
+            ]
         },
         "diffusion": {
             "cross_attention_cond_ids": ["prompt", "seconds_start", "seconds_total"],

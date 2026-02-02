@@ -5,18 +5,17 @@ import torch
 import torchaudio
 import typing as tp
 
-import auraloss
+
 from ema_pytorch import EMA
 from einops import rearrange
 from safetensors.torch import save_file
 from torch import optim
 from torch.nn import functional as F
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
+
 
 from ..inference.sampling import get_alphas_sigmas, sample, sample_discrete_euler, sample_flow_pingpong, truncated_logistic_normal_rescaled, DistributionShift, sample_timesteps_logsnr
-from ..models.diffusion import DiffusionModelWrapper, ConditionedDiffusionModelWrapper
-from ..models.autoencoders import DiffusionAutoencoder
-from .losses import AuralossLoss, MSELoss, MultiLoss
+from ..models.diffusion import ConditionedDiffusionModelWrapper
+from .losses import MSELoss, MultiLoss
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric
 
 from time import time

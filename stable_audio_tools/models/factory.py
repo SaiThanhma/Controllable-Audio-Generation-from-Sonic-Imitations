@@ -8,20 +8,11 @@ def create_model_from_config(model_config):
     if model_type == 'autoencoder':
         from .autoencoders import create_autoencoder_from_config
         return create_autoencoder_from_config(model_config)
-    elif model_type == 'diffusion_cond' or model_type == 'diffusion_cond_inpaint':
+    elif model_type == 'diffusion_cond':
         from .diffusion import create_diffusion_cond_from_config
         return create_diffusion_cond_from_config(model_config)
-    elif model_type == 'diffusion_autoencoder':
-        from .autoencoders import create_diffAE_from_config
-        return create_diffAE_from_config(model_config)
     else:
         raise NotImplementedError(f'Unknown model type: {model_type}')
-
-def create_model_from_config_path(model_config_path):
-    with open(model_config_path) as f:
-        model_config = json.load(f)
-    
-    return create_model_from_config(model_config)
 
 def create_pretransform_from_config(pretransform_config, sample_rate):
     pretransform_type = pretransform_config.get('type', None)
@@ -43,33 +34,6 @@ def create_pretransform_from_config(pretransform_config, sample_rate):
         chunked = pretransform_config.get("chunked", False)
 
         pretransform = AutoencoderPretransform(autoencoder, scale=scale, model_half=model_half, iterate_batch=iterate_batch, chunked=chunked)
-    elif pretransform_type == 'wavelet':
-        from .pretransforms import WaveletPretransform
-
-        wavelet_config = pretransform_config["config"]
-        channels = wavelet_config["channels"]
-        levels = wavelet_config["levels"]
-        wavelet = wavelet_config["wavelet"]
-
-        pretransform = WaveletPretransform(channels, levels, wavelet)
-    elif pretransform_type == 'pqmf':
-        from .pretransforms import PQMFPretransform
-        pqmf_config = pretransform_config["config"]
-        pretransform = PQMFPretransform(**pqmf_config)
-    elif pretransform_type == 'dac_pretrained':
-        from .pretransforms import PretrainedDACPretransform
-        pretrained_dac_config = pretransform_config["config"]
-        pretransform = PretrainedDACPretransform(**pretrained_dac_config)
-    elif pretransform_type == "audiocraft_pretrained":
-        from .pretransforms import AudiocraftCompressionPretransform
-
-        audiocraft_config = pretransform_config["config"]
-        pretransform = AudiocraftCompressionPretransform(**audiocraft_config)
-    elif pretransform_type == "patched":
-        from .pretransforms import PatchedPretransform
-
-        patched_config = pretransform_config["config"]
-        pretransform = PatchedPretransform(**patched_config)
     else:
         raise NotImplementedError(f'Unknown pretransform type: {pretransform_type}')
     
@@ -85,65 +49,9 @@ def create_bottleneck_from_config(bottleneck_config):
 
     assert bottleneck_type is not None, 'type must be specified in bottleneck config'
 
-    if bottleneck_type == 'tanh':
-        from .bottleneck import TanhBottleneck
-        bottleneck = TanhBottleneck(**bottleneck_config.get('config', {}))
-    elif bottleneck_type == 'vae':
+    if bottleneck_type == 'vae':
         from .bottleneck import VAEBottleneck
         bottleneck = VAEBottleneck()
-    elif bottleneck_type == 'rvq':
-        from .bottleneck import RVQBottleneck
-
-        quantizer_params = {
-            "dim": 128,
-            "codebook_size": 1024,
-            "num_quantizers": 8,
-            "decay": 0.99,
-            "kmeans_init": True,
-            "kmeans_iters": 50,
-            "threshold_ema_dead_code": 2,
-        }
-
-        quantizer_params.update(bottleneck_config["config"])
-
-        bottleneck = RVQBottleneck(**quantizer_params)
-    elif bottleneck_type == "dac_rvq":
-        from .bottleneck import DACRVQBottleneck
-
-        bottleneck = DACRVQBottleneck(**bottleneck_config["config"])
-    
-    elif bottleneck_type == 'rvq_vae':
-        from .bottleneck import RVQVAEBottleneck
-
-        quantizer_params = {
-            "dim": 128,
-            "codebook_size": 1024,
-            "num_quantizers": 8,
-            "decay": 0.99,
-            "kmeans_init": True,
-            "kmeans_iters": 50,
-            "threshold_ema_dead_code": 2,
-        }
-
-        quantizer_params.update(bottleneck_config["config"])
-
-        bottleneck = RVQVAEBottleneck(**quantizer_params)
-        
-    elif bottleneck_type == 'dac_rvq_vae':
-        from .bottleneck import DACRVQVAEBottleneck
-        bottleneck = DACRVQVAEBottleneck(**bottleneck_config["config"])
-    elif bottleneck_type == 'l2_norm':
-        from .bottleneck import L2Bottleneck
-        bottleneck = L2Bottleneck()
-    elif bottleneck_type == "wasserstein":
-        from .bottleneck import WassersteinBottleneck
-        bottleneck = WassersteinBottleneck(**bottleneck_config.get("config", {}))
-    elif bottleneck_type == "fsq":
-        from .bottleneck import FSQBottleneck
-        bottleneck = FSQBottleneck(**bottleneck_config["config"])
-    elif bottleneck_type == "dithered_fsq":
-        from .bottleneck import DitheredFSQBottleneck
-        return DitheredFSQBottleneck(**bottleneck_config["config"])
     else:
         raise NotImplementedError(f'Unknown bottleneck type: {bottleneck_type}')
     
