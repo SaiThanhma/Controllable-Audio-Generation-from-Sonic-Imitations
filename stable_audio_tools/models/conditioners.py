@@ -312,12 +312,31 @@ class ControlSignalConditioner(Conditioner):
     def _pitch(self, X):      
         # X: (B, 1, N)
         # output: (B, 360, frames)
-        all_probs = [] 
-        for x in X:
-            batch = next(torchcrepe.preprocess(x, self.sample_rate, self.hop_length, device=x.device))
-            with torch.no_grad():
-                probs = torchcrepe.infer(batch, model='tiny',  device=x.device, embed=False) 
-            all_probs.append(probs)
+        # all_probs = []
+        # for x in X:
+        #     batch = next(torchcrepe.preprocess(x, self.sample_rate, self.hop_length, device=x.device))
+        #     generator = torchcrepe.preprocess(
+        #         audio, sample_rate, hop_length, batch_size, device, pad=True
+        #     )
+        #     print(batch.shape)
+        #     with torch.no_grad():
+        #         probs = torchcrepe.infer(batch, model='tiny',  device=x.device, embed=False) 
+        #     all_probs.append(probs)
+        all_probs = []
+        
+        with torch.no_grad():
+            for x in X:
+                # x: (1, N)
+                batch_probs = []
+                for batch in torchcrepe.preprocess(x, self.sample_rate, self.hop_length, device=x.device):
+                    probs = torchcrepe.infer(batch, model='tiny', device=x.device, embed=False)
+                    batch_probs.append(probs)
+                # (frames, 360)
+                print(len(batch_probs))
+                probs = torch.cat(batch_probs, dim=0)
+                all_probs.append(probs)
+        
+        # (B, frames, 360)
         audio_probs = torch.stack(all_probs, dim=0)
         probs = torch.where(audio_probs < 0.1, 0.0, audio_probs)
         return probs.permute(0, 2, 1)
@@ -432,9 +451,7 @@ class T5Conditioner(Conditioner):
             project_out: bool = False
     ):
         assert t5_model_name in self.T5_MODELS, f"Unknown T5 model name: {t5_model_name}"
-        print("output_dim: ")
-        print(output_dim)
-        print()
+        
         super().__init__(self.T5_MODEL_DIMS[t5_model_name], output_dim, project_out=project_out)
         
         from transformers import T5EncoderModel, AutoTokenizer

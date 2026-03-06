@@ -11,7 +11,6 @@ from alias_free_torch import Activation1d
 from typing import List, Literal, Dict, Any, Callable
 from einops import rearrange
 
-from ..inference.sampling import sample
 from ..inference.utils import prepare_audio
 from .blocks import SnakeBeta
 from .bottleneck import Bottleneck

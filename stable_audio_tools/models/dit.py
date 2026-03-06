@@ -231,17 +231,19 @@ class DiffusionTransformer(nn.Module):
     def forward(
         self, 
         x, 
-        t, 
+        t,
+        control_signal=None,
         cross_attn_cond=None,
         cross_attn_cond_mask=None,
-        negative_cross_attn_cond=None,
-        negative_cross_attn_mask=None,
+        negative_cross_attn_cond=None, # Remove
+        negative_cross_attn_mask=None, # Remove
         input_concat_cond=None,
         global_embed=None,
-        negative_global_embed=None,
-        prepend_cond=None,
-        prepend_cond_mask=None,
-        cfg_scale=1.0,
+        negative_global_embed=None, # Remove
+        prepend_cond=None, # Remove
+        prepend_cond_mask=None, # Remove
+        cfg_scale_text=1.0,
+        cfg_scale_controls=1.0,
         cfg_dropout_prob=0.0,
         cfg_interval = (0, 1),
         causal=False,
@@ -285,26 +287,13 @@ class DiffusionTransformer(nn.Module):
         if prepend_cond_mask is not None:
             prepend_cond_mask = prepend_cond_mask.bool()
 
-        # Early exit bypasses CFG processing
-        if exit_layer_ix is not None:
-            assert self.transformer_type == "continuous_transformer", "exit_layer_ix is only supported for continuous_transformer"
-            return self._forward(
-                x,
-                t,
-                cross_attn_cond=cross_attn_cond, 
-                cross_attn_cond_mask=cross_attn_cond_mask, 
-                input_concat_cond=input_concat_cond, 
-                global_embed=global_embed, 
-                prepend_cond=prepend_cond, 
-                prepend_cond_mask=prepend_cond_mask,
-                mask=mask,
-                return_info=return_info,
-                exit_layer_ix=exit_layer_ix,
-                **kwargs
-            )
+        sigma = torch.sin(t * math.pi / 2)
+        alpha = torch.cos(t * math.pi / 2)
 
-        # CFG dropout
-        if cfg_dropout_prob > 0.0 and cfg_scale == 1.0:
+        ctrl_embeddings = control_signal
+
+        # CFG dropout (Training)
+        if cfg_dropout_prob > 0.0 and cfg_scale_text == 1.0 and cfg_scale_controls == 1.0:
             if cross_attn_cond is not None:
                 null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
                 dropout_mask = torch.bernoulli(torch.full((cross_attn_cond.shape[0], 1, 1), cfg_dropout_prob, device=cross_attn_cond.device)).to(torch.bool)
@@ -315,104 +304,61 @@ class DiffusionTransformer(nn.Module):
                 dropout_mask = torch.bernoulli(torch.full((prepend_cond.shape[0], 1, 1), cfg_dropout_prob, device=prepend_cond.device)).to(torch.bool)
                 prepend_cond = torch.where(dropout_mask, null_embed, prepend_cond)
 
-        if self.diffusion_objective == "v":
-            sigma = torch.sin(t * math.pi / 2)
-            alpha = torch.cos(t * math.pi / 2)
-        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-            sigma = t
+            # probs = torch.tensor([1.0 - (cfg_dropout_prob * 3), cfg_dropout_prob, cfg_dropout_prob, cfg_dropout_prob], device=device)
+            # batch_size = reals.shape[0]
+            # states = torch.multinomial(probs, batch_size, replacement=True) # (B,)
+            # drop_text_mask = (states == 1) | (states == 3)
+            # drop_control_mask = (states == 2) | (states == 3)
 
-        if cfg_scale != 1.0 and (cross_attn_cond is not None or prepend_cond is not None) and (cfg_interval[0] <= sigma[0] <= cfg_interval[1]):
+            # cond = self.diffusion.get_conditioning_inputs(conditioning)
+            # null_text = torch.zeros_like(cond['cross_attn_cond'], device=cond['cross_attn_cond'].device)
+            # text_mask_expanded = drop_text_mask.view(-1, 1, 1)
+            # cond['cross_attn_cond'] = torch.where(text_mask_expanded, null_text, cond['cross_attn_cond'])
 
-            # Classifier-free guidance
+            # ctrl_emb, _ = conditioning['control_signal']
+            # null_ctrl = torch.zeros_like(ctrl_emb, device=ctrl_emb.device)
+            # ctrl_mask_expanded = drop_control_mask.view(-1, 1, 1)
+            # ctrl_emb = torch.where(ctrl_mask_expanded, null_ctrl, ctrl_emb)
+            # noised_inputs = noised_inputs + ctrl_emb
+
+
+        if (cfg_scale_text != 1.0 or cfg_scale_controls != 1.0) and (cross_attn_cond is not None or prepend_cond is not None) and (cfg_interval[0] <= sigma[0] <= cfg_interval[1]):
+
+            # Classifier-free guidance (Validation/Eval)
             # Concatenate conditioned and unconditioned inputs on the batch dimension            
-            batch_inputs = torch.cat([x, x], dim=0)
-            batch_timestep = torch.cat([t, t], dim=0)
+            x_full_cond = x + ctrl_embeddings
 
-            if global_embed is not None:
-                batch_global_cond = torch.cat([global_embed, global_embed], dim=0)
-            else:
-                batch_global_cond = None
+            # Stack for batch processing: [full_cond, text_only, uncond]
+            batch_inputs = torch.cat([x_full_cond, x, x], dim=0)
+            batch_timestep = torch.cat([t, t, t], dim=0)
 
-            if input_concat_cond is not None:
-                batch_input_concat_cond = torch.cat([input_concat_cond, input_concat_cond], dim=0)
-            else:
-                batch_input_concat_cond = None
-
-            batch_cond = None
-            batch_cond_masks = None
+            batch_global_cond = torch.cat([global_embed, global_embed, global_embed], dim=0)
             
             # Handle CFG for cross-attention conditioning
-            if cross_attn_cond is not None:
-
-                null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
-
-                # For negative cross-attention conditioning, replace the null embed with the negative cross-attention conditioning
-                if negative_cross_attn_cond is not None:
-
-                    # If there's a negative cross-attention mask, set the masked tokens to the null embed
-                    if negative_cross_attn_mask is not None:
-                        negative_cross_attn_mask = negative_cross_attn_mask.to(torch.bool).unsqueeze(2)
-
-                        negative_cross_attn_cond = torch.where(negative_cross_attn_mask, negative_cross_attn_cond, null_embed)
-                    
-                    batch_cond = torch.cat([cross_attn_cond, negative_cross_attn_cond], dim=0)
-
-                else:
-                    batch_cond = torch.cat([cross_attn_cond, null_embed], dim=0)
-
-                if cross_attn_cond_mask is not None:
-                    batch_cond_masks = torch.cat([cross_attn_cond_mask, cross_attn_cond_mask], dim=0)
-               
-            batch_prepend_cond = None
-            batch_prepend_cond_mask = None
-
-            if prepend_cond is not None:
-
-                null_embed = torch.zeros_like(prepend_cond, device=prepend_cond.device)
-
-                batch_prepend_cond = torch.cat([prepend_cond, null_embed], dim=0)
-                           
-                if prepend_cond_mask is not None:
-                    batch_prepend_cond_mask = torch.cat([prepend_cond_mask, prepend_cond_mask], dim=0)
-         
-
-            if mask is not None:
-                batch_masks = torch.cat([mask, mask], dim=0)
-            else:
-                batch_masks = None
+            null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
+            batch_cond = torch.cat([cross_attn_cond, cross_attn_cond, null_embed], dim=0)
             
             batch_output = self._forward(
                 batch_inputs, 
                 batch_timestep, 
                 cross_attn_cond=batch_cond, 
-                cross_attn_cond_mask=batch_cond_masks, 
-                mask = batch_masks, 
-                input_concat_cond=batch_input_concat_cond, 
+                cross_attn_cond_mask=None, 
+                mask = None, 
+                input_concat_cond=None, 
                 global_embed = batch_global_cond,
-                prepend_cond = batch_prepend_cond,
-                prepend_cond_mask = batch_prepend_cond_mask,
+                prepend_cond = None,
+                prepend_cond_mask = None,
                 return_info = return_info,
                 **kwargs)
 
-            if return_info:
-                batch_output, info = batch_output
+            out_full, out_text, out_uncond = torch.chunk(batch_output, 3, dim=0)
 
-            cond_output, uncond_output = torch.chunk(batch_output, 2, dim=0)
-
-            cfg_output = uncond_output + (cond_output - uncond_output) * cfg_scale
-
-            # CFG Rescale
-            if scale_phi != 0.0:
-                cond_out_std = cond_output.std(dim=1, keepdim=True)
-                out_cfg_std = cfg_output.std(dim=1, keepdim=True)
-                output = scale_phi * (cfg_output * (cond_out_std/out_cfg_std)) + (1-scale_phi) * cfg_output
-            else:
-                output = cfg_output
-           
-            if return_info:
-                info["uncond_output"] = uncond_output
-                return output, info
-
+            #cfg_output = uncond_output + (cond_output - uncond_output) * cfg_scale
+            output = (
+                out_uncond +
+                cfg_scale_text * (out_text - out_uncond) +
+                cfg_scale_controls * (out_full - out_text)
+            )
             return output
             
         else:

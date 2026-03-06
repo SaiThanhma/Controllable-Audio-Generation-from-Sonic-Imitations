@@ -13,7 +13,6 @@ from .factory import create_pretransform_from_config
 from .pretransforms import Pretransform
 from .transformer import ContinuousTransformer
 from ..inference.generation import generate_diffusion_cond
-from ..inference.sampling import DistributionShift
 
 from time import time
 
@@ -97,7 +96,7 @@ class ConditionedDiffusionModelWrapper(nn.Module):
         self.min_input_length = min_input_length
 
         self.dist_shift = None
-        if distribution_shift_options is not None:
+        if distribution_shift_options is not None: # REMOVE
             self.dist_shift = DistributionShift(**distribution_shift_options)     
 
     def get_conditioning_inputs(self, conditioning_tensors: tp.Dict[str, tp.Any]):
@@ -200,7 +199,8 @@ class DiTWrapper(ConditionedDiffusionModel):
                 global_cond=None,
                 prepend_cond=None,
                 prepend_cond_mask=None,
-                cfg_scale=1.0,
+                cfg_scale_text=1.0,
+                cfg_scale_controls=1.0,
                 cfg_dropout_prob: float = 0.0,
                 batch_cfg: bool = True,
                 scale_phi: float = 0.0,
@@ -216,7 +216,8 @@ class DiTWrapper(ConditionedDiffusionModel):
             input_concat_cond=input_concat_cond,
             prepend_cond=prepend_cond,
             prepend_cond_mask=prepend_cond_mask,
-            cfg_scale=cfg_scale,
+            cfg_scale_text=cfg_scale_text,
+            cfg_scale_controls=cfg_scale_controls,
             cfg_dropout_prob=cfg_dropout_prob,
             scale_phi=scale_phi,
             global_embed=global_cond,
@@ -239,8 +240,8 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
     diffusion_model_config = diffusion_config.get('config', None)
     assert diffusion_model_config is not None, "Must specify diffusion model config"
 
-    if diffusion_model_type == 'dit':
-        diffusion_model = DiTWrapper(diffusion_objective=diffusion_objective, **diffusion_model_config)
+    # assert diffusion_model_config == 'dit'
+    diffusion_model = DiTWrapper(diffusion_objective=diffusion_objective, **diffusion_model_config)
 
     io_channels = model_config.get('io_channels', None)
     assert io_channels is not None, "Must specify io_channels in model config"
@@ -256,9 +257,9 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
 
     pretransform = model_config.get("pretransform", None)
 
-    distribution_shift_options = diffusion_config.get("distribution_shift_options", None)
+    distribution_shift_options = diffusion_config.get("distribution_shift_options", None) # Always None
 
-    if pretransform is not None:
+    if pretransform is not None: # Always true
         pretransform = create_pretransform_from_config(pretransform, sample_rate)
         min_input_length = pretransform.downsampling_ratio
     else:
@@ -267,10 +268,10 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
     conditioning_config = model_config.get('conditioning', None)
 
     conditioner = None
-    if conditioning_config is not None:
+    if conditioning_config is not None: # Remove cause always not None
         conditioner = create_multi_conditioner_from_conditioning_config(conditioning_config, pretransform=pretransform)
 
-    if diffusion_model_type == "dit":
+    if diffusion_model_type == "dit": # Remove
         min_input_length *= diffusion_model.model.patch_size
 
     # Get the proper wrapper class
