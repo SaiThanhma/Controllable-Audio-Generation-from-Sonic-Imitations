@@ -18,14 +18,13 @@ def copy_state_dict(model, state_dict):
                 state_dict[key] = state_dict[key].data
             model_state_dict[key] = state_dict[key]
 
-    model.load_state_dict(model_state_dict, strict=False)
+    model.load_state_dict(model_state_dict, strict=True)
 
 def load_ckpt_state_dict(ckpt_path):
     if ckpt_path.endswith(".safetensors"):
         state_dict = load_file(ckpt_path)
     else:
         state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)["state_dict"]
-    
     return state_dict
 
 def remove_weight_norm_from_model(model):

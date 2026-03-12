@@ -6,12 +6,10 @@ import numpy as np
 import typing as tp
 import random
 
-from .blocks import FourierFeatures
 from .conditioners import MultiConditioner, create_multi_conditioner_from_conditioning_config
 from .dit import DiffusionTransformer
 from .factory import create_pretransform_from_config
 from .pretransforms import Pretransform
-from .transformer import ContinuousTransformer
 from ..inference.generation import generate_diffusion_cond
 
 from time import time
@@ -33,34 +31,60 @@ class Profiler:
         rep += 80 * "=" + "\n\n\n"
         return rep
 
-class ConditionedDiffusionModel(nn.Module):
-    def __init__(self,
-                *args,
-                supports_cross_attention: bool = False,
-                supports_input_concat: bool = False,
-                supports_global_cond: bool = False,
-                supports_prepend_cond: bool = False,
-                **kwargs):
-        super().__init__(*args, **kwargs)
-        self.supports_cross_attention = supports_cross_attention
-        self.supports_input_concat = supports_input_concat
-        self.supports_global_cond = supports_global_cond
-        self.supports_prepend_cond = supports_prepend_cond
+
+class DiTWrapper(nn.Module): 
+    def __init__(
+        self,
+        io_channels: int,
+        embed_dim: int,
+        depth: int,
+        num_heads: int,
+        cond_token_dim: int,
+        global_cond_dim: int,
+        project_cond_tokens: bool,
+        transformer_type: str,
+    ):
+        super().__init__()
+        self.model = DiffusionTransformer(
+            io_channels=io_channels,
+            embed_dim=embed_dim,
+            depth=depth,
+            num_heads=num_heads,
+            cond_token_dim=cond_token_dim,
+            global_cond_dim=global_cond_dim,
+            project_cond_tokens=project_cond_tokens,
+            transformer_type=transformer_type,
+        )
 
     def forward(self,
-                x: torch.Tensor,
-                t: torch.Tensor,
-                cross_attn_cond: torch.Tensor = None,
-                cross_attn_mask: torch.Tensor = None,
-                input_concat_cond: torch.Tensor = None,
-                global_embed: torch.Tensor = None,
-                prepend_cond: torch.Tensor = None,
-                prepend_cond_mask: torch.Tensor = None,
-                cfg_scale: float = 1.0,
-                cfg_dropout_prob: float = 0.0,
-                batch_cfg: bool = False,
-                **kwargs):
-        raise NotImplementedError()
+                x,
+                t,
+                control_signal,
+                cross_attn_cond,
+                cross_attn_mask,
+                input_concat_cond,
+                global_cond,
+                prepend_cond,
+                prepend_cond_mask,
+                cfg_scale_text : int,
+                cfg_scale_controls : int,
+                cfg_dropout_prob: float,
+                ):
+
+        return self.model(
+            x,
+            t,
+            control_signal=control_signal,
+            cross_attn_cond=cross_attn_cond,
+            cross_attn_cond_mask=cross_attn_mask,
+            input_concat_cond=input_concat_cond,
+            prepend_cond=prepend_cond,
+            prepend_cond_mask=prepend_cond_mask,
+            cfg_scale_text=cfg_scale_text,
+            cfg_scale_controls=cfg_scale_controls,
+            cfg_dropout_prob=cfg_dropout_prob,
+            global_embed=global_cond,
+            )
 
 class ConditionedDiffusionModelWrapper(nn.Module):
     """
@@ -68,18 +92,16 @@ class ConditionedDiffusionModelWrapper(nn.Module):
     """
     def __init__(
             self,
-            model: ConditionedDiffusionModel,
+            model: DiTWrapper,
             conditioner: MultiConditioner,
             io_channels,
             sample_rate,
             min_input_length: int,
-            diffusion_objective: tp.Literal["v", "rectified_flow", "rf_denoiser"] = "v",
-            distribution_shift_options = None,
-            pretransform: tp.Optional[Pretransform] = None,
-            cross_attn_cond_ids: tp.List[str] = [],
-            global_cond_ids: tp.List[str] = [],
-            input_concat_ids: tp.List[str] = [],
-            prepend_cond_ids: tp.List[str] = [],
+            pretransform: tp.Optional[Pretransform],
+            cross_attn_cond_ids: tp.List[str],
+            global_cond_ids: tp.List[str],
+            input_concat_ids: tp.List[str],
+            prepend_cond_ids: tp.List[str],
             ):
         super().__init__()
 
@@ -87,17 +109,12 @@ class ConditionedDiffusionModelWrapper(nn.Module):
         self.conditioner = conditioner
         self.io_channels = io_channels
         self.sample_rate = sample_rate
-        self.diffusion_objective = diffusion_objective
         self.pretransform = pretransform
         self.cross_attn_cond_ids = cross_attn_cond_ids
         self.global_cond_ids = global_cond_ids
         self.input_concat_ids = input_concat_ids
         self.prepend_cond_ids = prepend_cond_ids
         self.min_input_length = min_input_length
-
-        self.dist_shift = None
-        if distribution_shift_options is not None: # REMOVE
-            self.dist_shift = DistributionShift(**distribution_shift_options)     
 
     def get_conditioning_inputs(self, conditioning_tensors: tp.Dict[str, tp.Any]):
         cross_attention_input = None
@@ -161,129 +178,60 @@ class ConditionedDiffusionModelWrapper(nn.Module):
             prepend_cond = torch.cat(prepend_conds, dim=1)
             prepend_cond_mask = torch.cat(prepend_cond_masks, dim=1)
 
-
         return {
             "cross_attn_cond": cross_attention_input,
             "cross_attn_mask": cross_attention_masks,
             "global_cond": global_cond,
             "input_concat_cond": input_concat_cond,
             "prepend_cond": prepend_cond,
-            "prepend_cond_mask": prepend_cond_mask
+            "prepend_cond_mask": prepend_cond_mask,
         }
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, cond: tp.Dict[str, tp.Any], **kwargs):
-        return self.model(x, t, **self.get_conditioning_inputs(cond), **kwargs)
+    def forward(self, x: torch.Tensor, t: torch.Tensor, cond: tp.Dict[str, tp.Any], cfg_dropout_prob, cfg_scale_text, cfg_scale_controls, control_signal):
+        return self.model(x, t, **self.get_conditioning_inputs(cond), cfg_dropout_prob = cfg_dropout_prob, cfg_scale_text = cfg_scale_text, cfg_scale_controls = cfg_scale_controls, control_signal= control_signal)
 
     def generate(self, *args, **kwargs):
         return generate_diffusion_cond(self, *args, **kwargs)
 
-class DiTWrapper(ConditionedDiffusionModel):
-    def __init__(
-        self,
-        diffusion_objective: str,
-        *args,
-        **kwargs
-    ):
-        super().__init__(supports_cross_attention=True, supports_global_cond=False, supports_input_concat=False)
-
-        self.diffusion_objective = diffusion_objective
-
-        self.model = DiffusionTransformer(diffusion_objective=diffusion_objective, *args, **kwargs)
-
-    def forward(self,
-                x,
-                t,
-                cross_attn_cond=None,
-                cross_attn_mask=None,
-                input_concat_cond=None,
-                global_cond=None,
-                prepend_cond=None,
-                prepend_cond_mask=None,
-                cfg_scale_text=1.0,
-                cfg_scale_controls=1.0,
-                cfg_dropout_prob: float = 0.0,
-                batch_cfg: bool = True,
-                scale_phi: float = 0.0,
-                **kwargs):
-
-        assert batch_cfg, "batch_cfg must be True for DiTWrapper"
-
-        return self.model(
-            x,
-            t,
-            cross_attn_cond=cross_attn_cond,
-            cross_attn_cond_mask=cross_attn_mask,
-            input_concat_cond=input_concat_cond,
-            prepend_cond=prepend_cond,
-            prepend_cond_mask=prepend_cond_mask,
-            cfg_scale_text=cfg_scale_text,
-            cfg_scale_controls=cfg_scale_controls,
-            cfg_dropout_prob=cfg_dropout_prob,
-            scale_phi=scale_phi,
-            global_embed=global_cond,
-            **kwargs)
 
 def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
 
     model_config = config["model"]
 
-    model_type = config["model_type"]
+    diffusion_config = model_config['diffusion']
 
-    diffusion_config = model_config.get('diffusion', None)
-    assert diffusion_config is not None, "Must specify diffusion config"
+    diffusion_model_config = diffusion_config['config']
 
-    diffusion_objective = diffusion_config.get('diffusion_objective', 'v')
+    diffusion_model = DiTWrapper(
+        io_channels=diffusion_model_config["io_channels"],
+        embed_dim=diffusion_model_config["embed_dim"],
+        depth=diffusion_model_config["depth"],
+        num_heads=diffusion_model_config["num_heads"],
+        cond_token_dim=diffusion_model_config["cond_token_dim"],
+        global_cond_dim=diffusion_model_config["global_cond_dim"],
+        project_cond_tokens=diffusion_model_config["project_cond_tokens"],
+        transformer_type=diffusion_model_config["transformer_type"],
+    )
 
-    diffusion_model_type = diffusion_config.get('type', None)
-    assert diffusion_model_type is not None, "Must specify diffusion model type"
+    io_channels = model_config['io_channels']
 
-    diffusion_model_config = diffusion_config.get('config', None)
-    assert diffusion_model_config is not None, "Must specify diffusion model config"
+    sample_rate = config['sample_rate']
 
-    # assert diffusion_model_config == 'dit'
-    diffusion_model = DiTWrapper(diffusion_objective=diffusion_objective, **diffusion_model_config)
+    cross_attention_ids = diffusion_config['cross_attention_cond_ids']
+    global_cond_ids = diffusion_config['global_cond_ids']
+    input_concat_ids = diffusion_config['input_concat_ids']
+    prepend_cond_ids = diffusion_config['prepend_cond_ids']
 
-    io_channels = model_config.get('io_channels', None)
-    assert io_channels is not None, "Must specify io_channels in model config"
+    pretransform = model_config.get("pretransform")
 
-    sample_rate = config.get('sample_rate', None)
-    assert sample_rate is not None, "Must specify sample_rate in config"
+    pretransform = create_pretransform_from_config(pretransform, sample_rate)
+    min_input_length = pretransform.downsampling_ratio
 
-
-    cross_attention_ids = diffusion_config.get('cross_attention_cond_ids', [])
-    global_cond_ids = diffusion_config.get('global_cond_ids', [])
-    input_concat_ids = diffusion_config.get('input_concat_ids', [])
-    prepend_cond_ids = diffusion_config.get('prepend_cond_ids', [])
-
-    pretransform = model_config.get("pretransform", None)
-
-    distribution_shift_options = diffusion_config.get("distribution_shift_options", None) # Always None
-
-    if pretransform is not None: # Always true
-        pretransform = create_pretransform_from_config(pretransform, sample_rate)
-        min_input_length = pretransform.downsampling_ratio
-    else:
-        min_input_length = 1
-
-    conditioning_config = model_config.get('conditioning', None)
-
-    conditioner = None
-    if conditioning_config is not None: # Remove cause always not None
-        conditioner = create_multi_conditioner_from_conditioning_config(conditioning_config, pretransform=pretransform)
-
-    if diffusion_model_type == "dit": # Remove
-        min_input_length *= diffusion_model.model.patch_size
-
-    # Get the proper wrapper class
-
-    extra_kwargs = {}
-
-    if model_type == "diffusion_cond":
-        wrapper_fn = ConditionedDiffusionModelWrapper
-
-        extra_kwargs["diffusion_objective"] = diffusion_objective
-        
-    return wrapper_fn(
+    conditioning_config = model_config['conditioning']
+    conditioner = create_multi_conditioner_from_conditioning_config(conditioning_config, pretransform=pretransform)
+    min_input_length *= diffusion_model.model.patch_size
+    
+    return ConditionedDiffusionModelWrapper(
         diffusion_model,
         conditioner,
         min_input_length=min_input_length,
@@ -294,6 +242,4 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
         prepend_cond_ids=prepend_cond_ids,
         pretransform=pretransform,
         io_channels=io_channels,
-        distribution_shift_options=distribution_shift_options,
-        **extra_kwargs
     )

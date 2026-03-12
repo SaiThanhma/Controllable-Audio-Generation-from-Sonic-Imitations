@@ -1,15 +1,9 @@
 import json
 
 def create_model_from_config(model_config):
-    model_type = model_config.get('model_type', None)
+    from .diffusion import create_diffusion_cond_from_config
+    return create_diffusion_cond_from_config(model_config)
 
-    assert model_type is not None, 'model_type must be specified in model config'
-
-    if model_type == 'diffusion_cond':
-        from .diffusion import create_diffusion_cond_from_config
-        return create_diffusion_cond_from_config(model_config)
-    else:
-        raise NotImplementedError(f'Unknown model type: {model_type}')
 
 def create_pretransform_from_config(pretransform_config, sample_rate):
     pretransform_type = pretransform_config.get('type', None)

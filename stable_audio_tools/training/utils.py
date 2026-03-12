@@ -1,7 +1,10 @@
 from pytorch_lightning.loggers import WandbLogger, CometLogger
+from torchaudio import transforms as T
+from ..data.utils import PadCrop_Normalized_T, Stereo
 
 import wandb
 import torch
+import torchaudio
 import os
 
 def get_rank():
@@ -118,3 +121,38 @@ def log_image(logger, key, img_data):
         logger.experiment.log({key: wandb.Image(img_data)})
     elif isinstance(logger, CometLogger):
         logger.experiment.log_image(img_data, name=key)
+
+
+def load_audio(
+    audio_path: str,
+    sample_rate: int,
+    sample_size: int,
+    device: str,
+):
+
+    # Load audio file
+    audio, in_sr = torchaudio.load(audio_path)
+    
+    # Resample if necessary
+    if in_sr != sample_rate:
+        resample_tf = T.Resample(in_sr, sample_rate)
+        audio = resample_tf(audio)
+    
+    # Pad/crop if sample_size is specified
+    pad_crop = PadCrop_Normalized_T(
+        sample_size, 
+        sample_rate=sample_rate, 
+        randomize=False
+    )
+    audio, _, _, seconds_start, seconds_total, _= pad_crop(audio)
+    
+    augs = Stereo()
+
+    audio = augs(audio)
+    
+    # Clamp audio values
+    audio = audio.clamp(-1, 1)
+
+    audio = audio.to(device)
+    
+    return audio.unsqueeze(0), seconds_start, seconds_total

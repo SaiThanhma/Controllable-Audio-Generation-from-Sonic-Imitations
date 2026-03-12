@@ -56,7 +56,6 @@ class DiffusionTransformer(nn.Module):
 
         if cond_token_dim > 0:
             # Conditioning tokens
-
             cond_embed_dim = cond_token_dim if not project_cond_tokens else embed_dim
             self.to_cond_embed = nn.Sequential(
                 nn.Linear(cond_token_dim, cond_embed_dim, bias=False),
@@ -232,7 +231,6 @@ class DiffusionTransformer(nn.Module):
         self, 
         x, 
         t,
-        control_signal=None,
         cross_attn_cond=None,
         cross_attn_cond_mask=None,
         negative_cross_attn_cond=None, # Remove
@@ -242,12 +240,12 @@ class DiffusionTransformer(nn.Module):
         negative_global_embed=None, # Remove
         prepend_cond=None, # Remove
         prepend_cond_mask=None, # Remove
+        control_signal=None, # control_signal
         cfg_scale_text=1.0,
         cfg_scale_controls=1.0,
         cfg_dropout_prob=0.0,
         cfg_interval = (0, 1),
         causal=False,
-        scale_phi=0.0,
         mask=None,
         return_info=False,
         exit_layer_ix=None,
@@ -290,43 +288,29 @@ class DiffusionTransformer(nn.Module):
         sigma = torch.sin(t * math.pi / 2)
         alpha = torch.cos(t * math.pi / 2)
 
-        ctrl_embeddings = control_signal
-
         # CFG dropout (Training)
         if cfg_dropout_prob > 0.0 and cfg_scale_text == 1.0 and cfg_scale_controls == 1.0:
-            if cross_attn_cond is not None:
-                null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
-                dropout_mask = torch.bernoulli(torch.full((cross_attn_cond.shape[0], 1, 1), cfg_dropout_prob, device=cross_attn_cond.device)).to(torch.bool)
-                cross_attn_cond = torch.where(dropout_mask, null_embed, cross_attn_cond)
+            probs = torch.tensor([1.0 - (cfg_dropout_prob * 3), cfg_dropout_prob, cfg_dropout_prob, cfg_dropout_prob], device=control_signal.device)
+            batch_size = x.shape[0]
+            states = torch.multinomial(probs, batch_size, replacement=True) # (B,)
+            drop_text_mask = (states == 1) | (states == 3)
+            drop_control_mask = (states == 2) | (states == 3)
 
-            if prepend_cond is not None:
-                null_embed = torch.zeros_like(prepend_cond, device=prepend_cond.device)
-                dropout_mask = torch.bernoulli(torch.full((prepend_cond.shape[0], 1, 1), cfg_dropout_prob, device=prepend_cond.device)).to(torch.bool)
-                prepend_cond = torch.where(dropout_mask, null_embed, prepend_cond)
+            null_text = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
+            text_mask_expanded = drop_text_mask.view(-1, 1, 1)
+            cross_attn_cond = torch.where(text_mask_expanded, null_text, cross_attn_cond)
 
-            # probs = torch.tensor([1.0 - (cfg_dropout_prob * 3), cfg_dropout_prob, cfg_dropout_prob, cfg_dropout_prob], device=device)
-            # batch_size = reals.shape[0]
-            # states = torch.multinomial(probs, batch_size, replacement=True) # (B,)
-            # drop_text_mask = (states == 1) | (states == 3)
-            # drop_control_mask = (states == 2) | (states == 3)
-
-            # cond = self.diffusion.get_conditioning_inputs(conditioning)
-            # null_text = torch.zeros_like(cond['cross_attn_cond'], device=cond['cross_attn_cond'].device)
-            # text_mask_expanded = drop_text_mask.view(-1, 1, 1)
-            # cond['cross_attn_cond'] = torch.where(text_mask_expanded, null_text, cond['cross_attn_cond'])
-
-            # ctrl_emb, _ = conditioning['control_signal']
-            # null_ctrl = torch.zeros_like(ctrl_emb, device=ctrl_emb.device)
-            # ctrl_mask_expanded = drop_control_mask.view(-1, 1, 1)
-            # ctrl_emb = torch.where(ctrl_mask_expanded, null_ctrl, ctrl_emb)
-            # noised_inputs = noised_inputs + ctrl_emb
-
+            null_ctrl = torch.zeros_like(adding_cond, device=adding_cond.device)
+            ctrl_mask_expanded = drop_control_mask.view(-1, 1, 1)
+            adding_cond = torch.where(ctrl_mask_expanded, null_ctrl, adding_cond)
+            noised_inputs = noised_inputs + control_signal
 
         if (cfg_scale_text != 1.0 or cfg_scale_controls != 1.0) and (cross_attn_cond is not None or prepend_cond is not None) and (cfg_interval[0] <= sigma[0] <= cfg_interval[1]):
 
             # Classifier-free guidance (Validation/Eval)
-            # Concatenate conditioned and unconditioned inputs on the batch dimension            
-            x_full_cond = x + ctrl_embeddings
+            # Concatenate conditioned and unconditioned inputs on the batch dimension
+
+            x_full_cond = x + control_signal
 
             # Stack for batch processing: [full_cond, text_only, uncond]
             batch_inputs = torch.cat([x_full_cond, x, x], dim=0)
@@ -353,7 +337,6 @@ class DiffusionTransformer(nn.Module):
 
             out_full, out_text, out_uncond = torch.chunk(batch_output, 3, dim=0)
 
-            #cfg_output = uncond_output + (cond_output - uncond_output) * cfg_scale
             output = (
                 out_uncond +
                 cfg_scale_text * (out_text - out_uncond) +

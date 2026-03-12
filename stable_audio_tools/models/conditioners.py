@@ -11,7 +11,6 @@ from ..inference.utils import set_audio_channels
 from .factory import create_pretransform_from_config
 from .pretransforms import Pretransform
 from .utils import load_ckpt_state_dict
-from .transformer import AbsolutePositionalEmbedding
 
 from torch import nn
 
@@ -312,16 +311,6 @@ class ControlSignalConditioner(Conditioner):
     def _pitch(self, X):      
         # X: (B, 1, N)
         # output: (B, 360, frames)
-        # all_probs = []
-        # for x in X:
-        #     batch = next(torchcrepe.preprocess(x, self.sample_rate, self.hop_length, device=x.device))
-        #     generator = torchcrepe.preprocess(
-        #         audio, sample_rate, hop_length, batch_size, device, pad=True
-        #     )
-        #     print(batch.shape)
-        #     with torch.no_grad():
-        #         probs = torchcrepe.infer(batch, model='tiny',  device=x.device, embed=False) 
-        #     all_probs.append(probs)
         all_probs = []
         
         with torch.no_grad():
@@ -332,7 +321,6 @@ class ControlSignalConditioner(Conditioner):
                     probs = torchcrepe.infer(batch, model='tiny', device=x.device, embed=False)
                     batch_probs.append(probs)
                 # (frames, 360)
-                print(len(batch_probs))
                 probs = torch.cat(batch_probs, dim=0)
                 all_probs.append(probs)
         
@@ -414,9 +402,8 @@ class ControlSignalConditioner(Conditioner):
             p = torch.where(~drop_all_mask & drop_p_mask, torch.zeros_like(p), p)
 
         batch_embeds = l + c + p
-        mask = torch.ones(batch_embeds.shape[0], batch_embeds.shape[2]).to(device)
         # output shape (B, D, N)
-        return batch_embeds, mask
+        return batch_embeds
     
 
 class T5Conditioner(Conditioner):

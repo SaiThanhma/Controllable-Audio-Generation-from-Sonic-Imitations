@@ -3,21 +3,16 @@ import math
 import numpy as np
 import math
 
-from torch import nn, sin, pow
-from torch.nn import functional as F
+from torch import nn
 from torch.nn.utils import weight_norm
-from torchaudio import transforms as T
 from alias_free_torch import Activation1d
-from typing import List, Literal, Dict, Any, Callable
+from typing import Literal, Dict, Any
 from einops import rearrange
 
-from ..inference.utils import prepare_audio
 from .blocks import SnakeBeta
 from .bottleneck import Bottleneck
-from .diffusion import ConditionedDiffusionModel, DiTWrapper
 from .factory import create_bottleneck_from_config
-from .pretransforms import Pretransform, AutoencoderPretransform
-from .transformer import ContinuousTransformer, TransformerBlock, RotaryEmbedding
+from .pretransforms import Pretransform
 
 def WNConv1d(*args, **kwargs):
     return weight_norm(nn.Conv1d(*args, **kwargs))
@@ -43,16 +38,6 @@ def get_activation(activation: Literal["elu", "snake", "none"], antialias=False,
         act = Activation1d(act)
     
     return act
-
-def fold_channels_into_batch(x):
-    x = rearrange(x, 'b c ... -> (b c) ...')
-    return x
-
-def unfold_channels_from_batch(x, channels):
-    if channels == 1:
-        return x.unsqueeze(1)
-    x = rearrange(x, '(b c) ... -> b c ...', c = channels)
-    return x
 
 class ResidualUnit(nn.Module):
     def __init__(self, in_channels, out_channels, dilation, use_snake=False, antialias_activation=False):
@@ -80,12 +65,6 @@ class ResidualUnit(nn.Module):
             x = self.layers(x)
 
         return x + res
-
-class Transpose(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, x, **kwargs):
-        return rearrange(x, '... a b -> ... b a')
 
 class EncoderBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride, use_snake=False, antialias_activation=False):
@@ -229,9 +208,6 @@ class AudioAutoencoder(nn.Module):
         io_channels=2,
         bottleneck: Bottleneck = None,
         pretransform: Pretransform = None,
-        in_channels = None,
-        out_channels = None,
-        soft_clip = False
     ):
         super().__init__()
 
@@ -240,51 +216,20 @@ class AudioAutoencoder(nn.Module):
 
         self.latent_dim = latent_dim
         self.io_channels = io_channels
-        self.in_channels = io_channels
-        self.out_channels = io_channels
 
         self.min_length = self.downsampling_ratio
-
-        if in_channels is not None:
-            self.in_channels = in_channels
-
-        if out_channels is not None:
-            self.out_channels = out_channels
 
         self.bottleneck = bottleneck
 
         self.encoder = encoder
 
         self.decoder = decoder
-
-        self.pretransform = pretransform
-
-        self.soft_clip = soft_clip
  
         self.is_discrete = self.bottleneck is not None and self.bottleneck.is_discrete
 
     def encode(self, audio, skip_bottleneck: bool = False, return_info=False, skip_pretransform=False, iterate_batch=False, **kwargs):
 
         info = {}
-
-        if self.pretransform is not None and not skip_pretransform:
-            if self.pretransform.enable_grad:
-                if iterate_batch:
-                    audios = []
-                    for i in range(audio.shape[0]):
-                        audios.append(self.pretransform.encode(audio[i:i+1]))
-                    audio = torch.cat(audios, dim=0)
-                else:
-                    audio = self.pretransform.encode(audio)
-            else:
-                with torch.no_grad():
-                    if iterate_batch:
-                        audios = []
-                        for i in range(audio.shape[0]):
-                            audios.append(self.pretransform.encode(audio[i:i+1]))
-                        audio = torch.cat(audios, dim=0)
-                    else:
-                        audio = self.pretransform.encode(audio)
 
         if self.encoder is not None:
             if iterate_batch:
@@ -329,94 +274,9 @@ class AudioAutoencoder(nn.Module):
         else:
             decoded = self.decoder(latents, **kwargs)
 
-        if self.pretransform is not None:
-            if self.pretransform.enable_grad:
-                if iterate_batch:
-                    decodeds = []
-                    for i in range(decoded.shape[0]):
-                        decodeds.append(self.pretransform.decode(decoded[i:i+1]))
-                    decoded = torch.cat(decodeds, dim=0)
-                else:
-                    decoded = self.pretransform.decode(decoded)
-            else:
-                with torch.no_grad():
-                    if iterate_batch:
-                        decodeds = []
-                        for i in range(latents.shape[0]):
-                            decodeds.append(self.pretransform.decode(decoded[i:i+1]))
-                        decoded = torch.cat(decodeds, dim=0)
-                    else:
-                        decoded = self.pretransform.decode(decoded)
-
-        if self.soft_clip:
-            decoded = torch.tanh(decoded)
         
         return decoded
-          
-    def decode_tokens(self, tokens, **kwargs):
-        '''
-        Decode discrete tokens to audio
-        Only works with discrete autoencoders
-        '''
 
-        assert isinstance(self.bottleneck, DiscreteBottleneck), "decode_tokens only works with discrete autoencoders"
-
-        latents = self.bottleneck.decode_tokens(tokens, **kwargs)
-
-        return self.decode(latents, **kwargs)
-  
-    def preprocess_audio_for_encoder(self, audio, in_sr):
-        '''
-        Preprocess single audio tensor (Channels x Length) to be compatible with the encoder.
-        If the model is mono, stereo audio will be converted to mono.
-        Audio will be silence-padded to be a multiple of the model's downsampling ratio.
-        Audio will be resampled to the model's sample rate. 
-        The output will have batch size 1 and be shape (1 x Channels x Length)
-        '''
-        return self.preprocess_audio_list_for_encoder([audio], [in_sr])
-
-    def preprocess_audio_list_for_encoder(self, audio_list, in_sr_list):
-        '''
-        Preprocess a [list] of audio (Channels x Length) into a batch tensor to be compatable with the encoder. 
-        The audio in that list can be of different lengths and channels. 
-        in_sr can be an integer or list. If it's an integer it will be assumed it is the input sample_rate for every audio.
-        All audio will be resampled to the model's sample rate. 
-        Audio will be silence-padded to the longest length, and further padded to be a multiple of the model's downsampling ratio. 
-        If the model is mono, all audio will be converted to mono. 
-        The output will be a tensor of shape (Batch x Channels x Length)
-        '''
-        batch_size = len(audio_list)
-        if isinstance(in_sr_list, int):
-            in_sr_list = [in_sr_list]*batch_size
-        assert len(in_sr_list) == batch_size, "list of sample rates must be the same length of audio_list"
-        new_audio = []
-        max_length = 0
-        # resample & find the max length
-        for i in range(batch_size):
-            audio = audio_list[i]
-            in_sr = in_sr_list[i]
-            if len(audio.shape) == 3 and audio.shape[0] == 1:
-                # batchsize 1 was given by accident. Just squeeze it.
-                audio = audio.squeeze(0)
-            elif len(audio.shape) == 1:
-                # Mono signal, channel dimension is missing, unsqueeze it in
-                audio = audio.unsqueeze(0)
-            assert len(audio.shape)==2, "Audio should be shape (Channels x Length) with no batch dimension" 
-            # Resample audio
-            if in_sr != self.sample_rate:
-                resample_tf = T.Resample(in_sr, self.sample_rate).to(audio.device)
-                audio = resample_tf(audio)
-            new_audio.append(audio)
-            if audio.shape[-1] > max_length:
-                max_length = audio.shape[-1]
-        # Pad every audio to the same length, multiple of model's downsampling ratio
-        padded_audio_length = max_length + (self.min_length - (max_length % self.min_length)) % self.min_length
-        for i in range(batch_size):
-            # Pad it & if necessary, mixdown/duplicate stereo/mono channels to support model
-            new_audio[i] = prepare_audio(new_audio[i], in_sr=in_sr, target_sr=in_sr, target_length=padded_audio_length, 
-                target_channels=self.in_channels, device=new_audio[i].device).squeeze(0)
-        # convert to tensor 
-        return torch.stack(new_audio) 
 
     def encode_audio(self, audio, chunked=False, overlap=32, chunk_size=128, **kwargs):
         '''
@@ -598,29 +458,12 @@ def create_autoencoder_from_config(config: Dict[str, Any]):
     encoder = create_encoder_from_config(ae_config["encoder"])
     decoder = create_decoder_from_config(ae_config["decoder"])
 
-    bottleneck = ae_config.get("bottleneck", None)
-
-    latent_dim = ae_config.get("latent_dim", None)
-    assert latent_dim is not None, "latent_dim must be specified in model config"
-    downsampling_ratio = ae_config.get("downsampling_ratio", None)
-    assert downsampling_ratio is not None, "downsampling_ratio must be specified in model config"
-    io_channels = ae_config.get("io_channels", None)
-    assert io_channels is not None, "io_channels must be specified in model config"
-    sample_rate = config.get("sample_rate", None)
-    assert sample_rate is not None, "sample_rate must be specified in model config"
-
-    in_channels = ae_config.get("in_channels", None)
-    out_channels = ae_config.get("out_channels", None)
-
-    pretransform = ae_config.get("pretransform", None)
-
-    if pretransform is not None:
-        pretransform = create_pretransform_from_config(pretransform, sample_rate)
-
-    if bottleneck is not None:
-        bottleneck = create_bottleneck_from_config(bottleneck)
-
-    soft_clip = ae_config["decoder"].get("soft_clip", False)
+    bottleneck = ae_config["bottleneck"]
+    latent_dim = ae_config["latent_dim"]
+    downsampling_ratio = ae_config["downsampling_ratio"]
+    io_channels = ae_config["io_channels"]
+    sample_rate = config["sample_rate"]
+    bottleneck = create_bottleneck_from_config(bottleneck)
 
     return AudioAutoencoder(
         encoder,
@@ -630,8 +473,4 @@ def create_autoencoder_from_config(config: Dict[str, Any]):
         downsampling_ratio=downsampling_ratio,
         sample_rate=sample_rate,
         bottleneck=bottleneck,
-        pretransform=pretransform,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        soft_clip=soft_clip
     )
