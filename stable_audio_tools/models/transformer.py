@@ -33,15 +33,6 @@ def checkpoint(function, *args, **kwargs):
 # Copied and modified from https://github.com/lucidrains/x-transformers/blob/main/x_transformers/attend.py under MIT License
 # License can be found in LICENSES/LICENSE_XTRANSFORMERS.txt
 
-def create_causal_mask(i, j, device):
-    return torch.ones((i, j), device = device, dtype = torch.bool).triu(j - i + 1)
-
-def or_reduce(masks):
-    head, *body = masks
-    for rest in body:
-        head = head | rest
-    return head
-
 # positional embeddings
 
 class AbsolutePositionalEmbedding(nn.Module):
@@ -527,10 +518,6 @@ class Attention(nn.Module):
 
         # Communicate between heads
         
-        # with autocast(enabled = False):
-        #     out_dtype = out.dtype
-        #     out = out.to(torch.float32)
-        #     out = self.to_out(out).to(out_dtype)
         out = self.to_out(out)
 
         if self.feat_scale:

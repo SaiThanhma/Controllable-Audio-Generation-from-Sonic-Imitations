@@ -2,17 +2,16 @@
 
 import torch
 import logging, warnings
-import string
 import typing as tp
 import gc
-
-from .adp import NumberEmbedder
+from math import pi
 from ..inference.utils import set_audio_channels
-from .factory import create_pretransform_from_config
-from .pretransforms import Pretransform
+from .autoencoder import Pretransform
 from .utils import load_ckpt_state_dict
-
+from typing import List, Union
 from torch import nn
+from einops import rearrange
+from torch import Tensor
 
 class Conditioner(nn.Module):
     def __init__(
@@ -35,6 +34,48 @@ class NumberConditioner(Conditioner):
     '''
         Conditioner that takes a list of floats, normalizes them for a given range, and returns a list of embeddings
     '''
+
+    class LearnedPositionalEmbedding(nn.Module):
+        """Used for continuous time"""
+
+        def __init__(self, dim: int):
+            super().__init__()
+            assert (dim % 2) == 0
+            half_dim = dim // 2
+            self.weights = nn.Parameter(torch.randn(half_dim))
+
+        def forward(self, x: Tensor) -> Tensor:
+            x = rearrange(x, "b -> b 1")
+            freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * pi
+            fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+            fouriered = torch.cat((x, fouriered), dim=-1)
+            return fouriered
+
+    class NumberEmbedder(nn.Module):
+        def __init__(
+            self,
+            features: int,
+            dim: int = 256,
+        ):
+            super().__init__()
+            self.features = features
+            self.embedding = nn.Sequential(
+                NumberConditioner.LearnedPositionalEmbedding(dim),
+                nn.Linear(dim + 1, features),
+                )
+
+        def forward(self, x: Union[List[float], Tensor]) -> Tensor:
+            if not torch.is_tensor(x):
+                device = next(self.embedding.parameters()).device
+                x = torch.tensor(x, device=device)
+            assert isinstance(x, Tensor)
+            shape = x.shape
+            x = rearrange(x, "... -> (...)")
+            embedding = self.embedding(x)
+            x = embedding.view(*shape, self.features)
+            return x  # type: ignore
+
+
     def __init__(self, 
                 output_dim: int,
                 min_val: float=0,
@@ -45,7 +86,7 @@ class NumberConditioner(Conditioner):
         self.min_val = min_val
         self.max_val = max_val
 
-        self.embedder = NumberEmbedder(features=output_dim)
+        self.embedder = NumberConditioner.NumberEmbedder(features=output_dim)
 
     def forward(self, floats: tp.List[float], device=None) -> tp.Any:
     

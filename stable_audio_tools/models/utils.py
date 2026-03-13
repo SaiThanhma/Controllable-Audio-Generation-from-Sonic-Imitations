@@ -25,6 +25,16 @@ def load_ckpt_state_dict(ckpt_path):
         state_dict = load_file(ckpt_path)
     else:
         state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)["state_dict"]
+
+
+    keys = list(state_dict.keys())
+    keys = list(state_dict.keys())
+
+    with open('state_dict_keys.txt', "w") as f:
+        for k in keys:
+            f.write(k + "\n")
+
+    print(f"Saved {len(keys)} keys to {'state_dict_keys.txt'}")
     return state_dict
 
 def remove_weight_norm_from_model(model):

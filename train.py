@@ -2,13 +2,12 @@ import torch
 import json
 import os
 import pytorch_lightning as pl
-
-from typing import Dict, Optional, Union
 from prefigure.prefigure import get_all_args, push_wandb_config
 from stable_audio_tools.data.dataset import create_dataloader_from_config, fast_scandir
-from stable_audio_tools.models import create_model_from_config
-from stable_audio_tools.models.utils import copy_state_dict, load_ckpt_state_dict, remove_weight_norm_from_model
-from stable_audio_tools.training import create_training_wrapper_from_config, create_demo_callback_from_config
+from stable_audio_tools.models.utils import copy_state_dict, load_ckpt_state_dict
+from stable_audio_tools.models.dit import ConditionedDiffusionModelWrapper
+from stable_audio_tools.training.diffusion import DiffusionCondTrainingWrapper
+from stable_audio_tools.training.diffusion import DiffusionCondDemoCallback
 
 class ExceptionCallback(pl.Callback):
     def on_exception(self, trainer, module, err):
@@ -65,22 +64,20 @@ def main():
             shuffle=False
         )
 
-    model = create_model_from_config(model_config)
+    model = ConditionedDiffusionModelWrapper(model_config)
 
     if args.pretrained_ckpt_path:
         copy_state_dict(model, load_ckpt_state_dict(args.pretrained_ckpt_path))
 
-    if args.remove_pretransform_weight_norm == "pre_load":
-        remove_weight_norm_from_model(model.pretransform)
+    training_config = model_config["training"]
 
-    if args.pretransform_ckpt_path:
-        model.pretransform.load_state_dict(load_ckpt_state_dict(args.pretransform_ckpt_path))
-
-    # Remove weight_norm from the pretransform if specified
-    if args.remove_pretransform_weight_norm == "post_load":
-        remove_weight_norm_from_model(model.pretransform)
-
-    training_wrapper = create_training_wrapper_from_config(model_config, model)
+    training_wrapper = DiffusionCondTrainingWrapper(
+        model, 
+        use_ema = training_config["use_ema"],
+        optimizer_configs=training_config["optimizer_configs"],
+        validation_timesteps=training_config["validation_timesteps"],
+        cfg_dropout_prob = training_config["cfg_dropout_prob"],
+    )
 
     exc_callback = ExceptionCallback()
 
@@ -104,6 +101,19 @@ def main():
         
     ckpt_callback = pl.callbacks.ModelCheckpoint(every_n_train_steps=args.checkpoint_every, dirpath=checkpoint_dir, save_top_k=-1)
     save_model_config_callback = ModelConfigEmbedderCallback(model_config)
+
+    demo_config = training_config["demo"]
+    demo_callback = DiffusionCondDemoCallback(
+        demo_every=demo_config["demo_every"], 
+        sample_size=model_config["sample_size"],
+        demo_conditioning=demo_config["demo_cond"],
+        demo_steps=demo_config["demo_steps"], 
+        sample_rate=model_config["sample_rate"],
+        demo_cfg_scale_text=demo_config["demo_cfg_scales_text"],
+        demo_cfg_scale_controls=demo_config["demo_cfg_scales_controls"],
+        clap_ckpt_path=demo_config["clap_ckpt_path"],
+        outdir=demo_config["outdir"],
+    )
 
     #Combine args and config dicts
     args_dict = vars(args)
@@ -147,7 +157,7 @@ def main():
         strategy=strategy,
         precision=args.precision,
         accumulate_grad_batches=args.accum_batches, 
-        callbacks=[ckpt_callback, exc_callback, save_model_config_callback],
+        callbacks=[demo_callback, ckpt_callback, exc_callback, save_model_config_callback],
         logger=logger,
         log_every_n_steps=1,
         max_steps=args.max_steps,
@@ -160,9 +170,8 @@ def main():
     )
 
     if val_dl is not None:
-        print("Running pre-training validation...")
-        trainer.validate(training_wrapper, dataloaders=val_dl)
-
+       print("Running pre-training validation...")
+       #trainer.validate(training_wrapper, dataloaders=val_dl)
     trainer.fit(training_wrapper, train_dl, val_dl, ckpt_path=args.ckpt_path if args.ckpt_path else None)
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 from frechet_audio_distance import FrechetAudioDistance
 
-FAD_REF = "/home/stud/dco/Desktop/sketch2sound/eval/generated"
-FAD_EVAL = "/home/stud/dco/Desktop/sketch2sound/eval/generated"
+FAD_REF = "/home/stud/dco/Desktop/sketch2sound/eval/generated3"
+FAD_EVAL = "/home/stud/dco/Desktop/sketch2sound/eval/generated3"
 
 fad_vggish = FrechetAudioDistance(
     model_name="vggish",
@@ -17,16 +17,21 @@ score = fad_vggish.score(
     background_embds_path=None,
     eval_embds_path=None
     )
-print("FAD (CLAP):", score)
+print("FAD score (vggish): %.8f" % score)
 
-# fad_clap = FrechetAudioDistance(
-#     model_name="clap",
-#     submodel_name="630k-audioset",
-#     sample_rate=48000,
-#     enable_fusion=True,
-#     audio_load_worker=4,
-#     verbose=True,
-# )
+fad_clap = FrechetAudioDistance(
+    model_name="clap",
+    sample_rate=48000,
+    submodel_name="630k-audioset",  # for CLAP only
+    verbose=False,
+    enable_fusion=False,            # for CLAP only
+)
 
-# score = fad_vggish.score(FAD_REF, FAD_EVAL)
-# print("FAD (VGGish):", score)
+score = fad_clap.score(
+    background_dir=FAD_REF, 
+    eval_dir=FAD_EVAL,
+    background_embds_path=None,
+    eval_embds_path=None
+    )
+
+print("FAD score (clap): %.8f" % score)

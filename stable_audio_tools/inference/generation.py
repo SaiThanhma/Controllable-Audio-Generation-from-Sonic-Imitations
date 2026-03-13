@@ -1,18 +1,12 @@
 import numpy as np
 import torch 
 import typing as tp
-import math 
-from torchaudio import transforms as T
-from torch.nn.functional import interpolate
-
-from .utils import prepare_audio
-from .sampling import sample, sample_k, sample_rf
-from ..data.utils import PadCrop
+from .sampling import sample_k
 
 def generate_diffusion_cond(
         model,
         steps: int = 250,
-        cfg_scale_text=5.0,
+        cfg_scale_text=1.0,
         cfg_scale_controls=1.0,
         conditioning: dict = None,
         conditioning_tensors: tp.Optional[dict] = None,
@@ -72,37 +66,7 @@ def generate_diffusion_cond(
     assert conditioning is not None or conditioning_tensors is not None, "Must provide either conditioning or conditioning_tensors"
     if conditioning_tensors is None:
         conditioning_tensors = model.conditioner(conditioning, device)
-    conditioning_inputs = model.get_conditioning_inputs(conditioning_tensors)
-
-    if negative_conditioning is not None or negative_conditioning_tensors is not None:
-        
-        if negative_conditioning_tensors is None:
-            negative_conditioning_tensors = model.conditioner(negative_conditioning, device)
-            
-        negative_conditioning_tensors = model.get_conditioning_inputs(negative_conditioning_tensors, negative=True)
-    else:
-        negative_conditioning_tensors = {}
-
-    if init_audio is not None:
-        # The user supplied some initial audio (for inpainting or variation). Let us prepare the input audio.
-        in_sr, init_audio = init_audio
-
-        io_channels = model.io_channels
-
-        # For latent models, set the io_channels to the autoencoder's io_channels
-        if model.pretransform is not None:
-            io_channels = model.pretransform.io_channels
-
-        # Prepare the initial audio for use by the model
-        init_audio = prepare_audio(init_audio, in_sr=in_sr, target_sr=model.sample_rate, target_length=audio_sample_size, target_channels=io_channels, device=device)
-
-        # For latent models, encode the initial audio into latents
-        if model.pretransform is not None:
-            init_audio = model.pretransform.encode(init_audio)
-
-        init_audio = init_audio.repeat(batch_size, 1, 1)
-
-        sampler_kwargs["sigma_max"] = init_noise_level        
+    conditioning_inputs = model.get_conditioning_inputs(conditioning_tensors)   
 
     model_dtype = next(model.model.parameters()).dtype
     noise = noise.type(model_dtype)
@@ -110,57 +74,11 @@ def generate_diffusion_cond(
     # Now the generative AI part:
     # k-diffusion denoising process go!
 
-    diff_objective = model.diffusion_objective
-    if 'control_signal' in conditioning_tensors:
-        ctrl_emb, _ = conditioning_tensors['control_signal']
-        cross_attn_cond = conditioning_inputs['cross_attn_cond']
-        cross_attn_cond_mask = conditioning_inputs['cross_attn_mask']
-        global_cond = conditioning_inputs['global_cond']
-
-        # Stack for batch processing: [uncond, text_only, full_cond]
-        noise = torch.repeat_interleave(noise, repeats=3, dim=0)
-        noise[2::3] = noise[2::3] + ctrl_emb
-
-        cross_attn_cond = torch.zeros((cross_attn_cond.shape[0] * 3, *cross_attn_cond.shape[1:]), device=cross_attn_cond.device,dtype=cross_attn_cond.dtype)
-        cross_attn_cond[1::3] = conditioning_inputs['cross_attn_cond']
-        cross_attn_cond[2::3] = conditioning_inputs['cross_attn_cond']
-
-        cross_attn_cond_mask = torch.repeat_interleave(cross_attn_cond_mask, repeats=3, dim=0)
-        global_cond = torch.repeat_interleave(global_cond, repeats=3, dim=0)
-
-        conditioning_inputs = {
-            "cross_attn_cond": cross_attn_cond,
-            "cross_attn_mask": cross_attn_cond_mask,
-            "global_cond": global_cond
-            }
-
-    if diff_objective == "v":
-        # k-diffusion denoising process go!
-        sampled = sample_k(model.model, noise, init_audio, steps, **sampler_kwargs, **conditioning_inputs, **negative_conditioning_tensors, batch_cfg=True, cfg_dropout_prob = 0.0, cfg_scale = 1.0, device=device)
-    elif diff_objective in ["rectified_flow", "rf_denoiser"]:
-        if "sigma_min" in sampler_kwargs:
-            del sampler_kwargs["sigma_min"]
-
-        if "rho" in sampler_kwargs:
-            del sampler_kwargs["rho"]
-
-        sampled = sample_rf(model.model, noise, init_data=init_audio, steps=steps, **sampler_kwargs, **conditioning_inputs, **negative_conditioning_tensors, dist_shift=model.dist_shift, cfg_scale=cfg_scale, batch_cfg=True, rescale_cfg=True, device=device)
-
-    if 'control_signal' in conditioning_tensors:
-        assert sampled.shape[0] % 3 == 0
-        B = sampled.shape[0] // 3
-
-        out = sampled.view(B, 3, *sampled.shape[1:])
-        out_uncond = out[:, 0]
-        out_text   = out[:, 1]
-        out_full   = out[:, 2]
-        sampled = (
-            out_uncond
-            + cfg_scale_text * (out_text - out_uncond)
-            + cfg_scale_controls * (out_full - out_text)
-        )
-
+    # k-diffusion denoising process go
+    #sampled = sample_k(model.model, noise, init_audio, steps, **sampler_kwargs, **conditioning_inputs, cfg_scale_text = cfg_scale_text, cfg_scale_controls=cfg_scale_controls, batch_cfg=True, device=device, control_signal = conditioning_tensors['control_signal'][0])
+    sampled = sample_k(model.model, noise, init_audio, steps, **sampler_kwargs, **conditioning_inputs, cfg_scale_text = cfg_scale_text, cfg_scale_controls=cfg_scale_controls, batch_cfg=True, device=device)
     # v-diffusion: 
+
     #sampled = sample(model.model, noise, steps, 0, **conditioning_tensors, embedding_scale=cfg_scale)
     del noise
     del conditioning_tensors
@@ -175,4 +93,3 @@ def generate_diffusion_cond(
 
     # Return audio
     return sampled
-    

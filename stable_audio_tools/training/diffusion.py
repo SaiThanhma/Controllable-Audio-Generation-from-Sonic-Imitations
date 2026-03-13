@@ -15,14 +15,13 @@ from safetensors.torch import save_file
 from torch import optim
 from torch.nn import functional as F
 
-from ..models.diffusion import ConditionedDiffusionModelWrapper
+from ..models.dit import ConditionedDiffusionModelWrapper
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, load_audio
 from ..inference.sampling import get_alphas_sigmas, sample
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from ..eval import extract_csa, default_values
 from torchcrepe.core import SAMPLE_RATE
 from torchaudio import transforms as T
-from time import time
 from transformers import ClapModel, ClapProcessor
 
 from .vis import audio_spectrogram_image
@@ -114,7 +113,8 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         
         targets = noise * alphas - diffusion_input * sigmas
 
-        output = self.diffusion(noised_inputs, t, cond = conditioning, cfg_dropout_prob = self.cfg_dropout_prob, cfg_scale_text = 1, cfg_scale_controls = 1, control_signal=conditioning['control_signal'])
+        #output = self.diffusion(noised_inputs, t, cond = conditioning, cfg_dropout_prob = self.cfg_dropout_prob, cfg_scale_text = 1, cfg_scale_controls = 1, control_signal=conditioning['control_signal'])
+        output = self.diffusion(noised_inputs, t, cond=conditioning, cfg_dropout_prob = self.cfg_dropout_prob, cfg_scale = 1)
 
          # mse loss
         loss = ((output - targets)**2).mean()
@@ -243,8 +243,8 @@ class DiffusionCondDemoCallback(pl.Callback):
     @rank_zero_only
     @torch.no_grad()
     def on_train_batch_start(self, trainer, module: DiffusionCondTrainingWrapper, batch, batch_idx):
-        # if (trainer.global_step - 1) % self.demo_every != 0 or self.last_demo_step == trainer.global_step:
-        #    return
+        if (trainer.global_step - 1) % self.demo_every != 0 or self.last_demo_step == trainer.global_step:
+           return
 
         module.eval()
 
@@ -266,7 +266,6 @@ class DiffusionCondDemoCallback(pl.Callback):
             )
             demo_cond_device.append(cond_copy)
         
-
         conditioning = module.diffusion.conditioner(demo_cond_device, module.device)
 
         cond_inputs = module.diffusion.get_conditioning_inputs(conditioning)
