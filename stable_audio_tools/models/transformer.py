@@ -708,7 +708,7 @@ class ContinuousTransformer(nn.Module):
         dim_in = None,
         dim_out = None,
         dim_heads = 64,
-        cross_attend=False,
+        cross_attend=True,
         cond_token_dim=None,
         final_cross_attn_ix=-1,
         global_cond_dim=None,

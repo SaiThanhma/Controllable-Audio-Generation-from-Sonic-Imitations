@@ -1,15 +1,12 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-#from functools import partial
-import numpy as np
 import typing as tp
 
-from .conditioners import MultiConditioner, create_multi_conditioner_from_conditioning_config
-from .autoencoder import AudioAutoencoder
-from .autoencoder import AutoencoderPretransform
+from .conditioners import create_multi_conditioner_from_conditioning_config
+from .pretransform import AudioAutoencoder
+from .pretransform import AutoencoderPretransform
 from ..inference.generation import generate_diffusion_cond
-from time import time
 
 import typing as tp
 import math
@@ -131,10 +128,8 @@ class DiffusionTransformer(nn.Module):
                 dim_heads=embed_dim // num_heads,
                 dim_in=dim_in * patch_size,
                 dim_out=io_channels * patch_size,
-                cross_attend = cond_token_dim > 0,
                 cond_token_dim = cond_embed_dim,
                 global_cond_dim=global_dim,
-                **kwargs
             )
         else:
             raise ValueError(f"Unknown transformer type: {self.transformer_type}")
@@ -820,5 +815,6 @@ class ConditionedDiffusionModelWrapper(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor, cond: tp.Dict[str, tp.Any], **kwargs):
         return self.model(x, t, **self.get_conditioning_inputs(cond), **kwargs)
     
+    @torch.no_grad()
     def generate(self, *args, **kwargs):
         return generate_diffusion_cond(self, *args, **kwargs)

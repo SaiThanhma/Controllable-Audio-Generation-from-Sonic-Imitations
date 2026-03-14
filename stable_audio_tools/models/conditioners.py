@@ -6,7 +6,7 @@ import typing as tp
 import gc
 from math import pi
 from ..inference.utils import set_audio_channels
-from .autoencoder import Pretransform
+from .pretransform import Pretransform
 from .utils import load_ckpt_state_dict
 from typing import List, Union
 from torch import nn
